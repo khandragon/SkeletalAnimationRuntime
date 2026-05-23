@@ -8,6 +8,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_executable(SkeletalAnimationRuntime
     src/main.cpp
+    src/render/Shader.cpp
+    src/render/Shader.h
 )
 
 find_package(glfw3 CONFIG REQUIRED)
