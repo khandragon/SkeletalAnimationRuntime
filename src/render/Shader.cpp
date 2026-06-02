@@ -2,7 +2,9 @@
 
 #include <iostream>
 #include <vector>
+#include <glm/gtc/type_ptr.hpp>
 
+// Compiles vertex and fragment shaders, links them into a shader program, and checks for errors.
 bool Shader::CreateFromSource(const char *vertexSource, const char *fragmentSource)
 {
     // Creating and compiling vertex shader
@@ -64,6 +66,24 @@ void Shader::Destroy()
     }
 }
 
+// Setting a mat4 uniform variable in the shader program
+void Shader::SetMat4(const std::string &name, const glm::mat4 &value) const
+{
+    GLint location = glGetUniformLocation(m_program, name.c_str());
+
+    if (location == -1)
+    {
+        return;
+    }
+
+    glUniformMatrix4fv(
+        location,
+        1,
+        GL_FALSE,
+        glm::value_ptr(value));
+}
+
+// Helper function to check shader compilation status and print error logs if compilation fails
 bool Shader::CheckShaderCompile(GLuint shader, const std::string &name)
 {
     GLint success = 0;
@@ -85,6 +105,7 @@ bool Shader::CheckShaderCompile(GLuint shader, const std::string &name)
     return false;
 }
 
+// Helper function to check shader program linking status and print error logs if linking fails
 bool Shader::CheckProgramLink(GLuint program)
 {
     GLint success = 0;

@@ -14,5 +14,6 @@
     },
     "nlohmann-json",
     "tinygltf"
-  ]
+  ],
+  "builtin-baseline": "f3e10653cc27d62a37a3763cd84b38bca07c6075"
 }
