@@ -16,6 +16,9 @@ add_executable(SkeletalAnimationRuntime
     src/animation/AnimationClip.h
     src/animation/AnimationClip.cpp
     src/animation/AnimationSampler.h
+    src/animation/Pose.h
+    src/animation/Animator.h
+    src/animation/Animator.cpp
 
     src/render/Shader.h
     src/render/Shader.cpp

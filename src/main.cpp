@@ -14,7 +14,9 @@
 #include "assets/GltfLoader.h"
 #include "render/Mesh.h"
 #include "render/Shader.h"
+#include "animation/Animator.h"
 #include "animation/AnimationClip.h"
+#include "animation/Skeleton.h"
 
 static void GlfwErrorCallback(int error, const char *description)
 {
@@ -149,6 +151,14 @@ int main()
         std::cerr << "No animation clips loaded from model.\n";
     }
 
+    Animator animator;
+    animator.Initialize(&skeleton, &animationClips);
+
+    if (!animationClips.empty())
+    {
+        animator.Play(1); // Fox: 0 Survey, 1 Walk, 2 Run
+    }
+
     std::vector<glm::mat4> bindPoseGlobalMatrices;
     ComputeBindPoseFromInverseBindMatrices(skeleton, bindPoseGlobalMatrices);
 
@@ -186,28 +196,62 @@ int main()
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 450");
 
+    double previousTime = glfwGetTime();
+
     while (!glfwWindowShouldClose(window))
     {
         glfwPollEvents();
+
+        const double currentTime = glfwGetTime();
+        const float deltaTime = static_cast<float>(currentTime - previousTime);
+        previousTime = currentTime;
 
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         {
             glfwSetWindowShouldClose(window, GLFW_TRUE);
         }
+        if (glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS)
+        {
+            animator.Play(0);
+        }
+
+        if (glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS)
+        {
+            animator.Play(1);
+        }
+
+        if (glfwGetKey(window, GLFW_KEY_3) == GLFW_PRESS)
+        {
+            animator.Play(2);
+        }
+
+        animator.Update(deltaTime);
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
         ImGui::Begin("Animation Runtime Debug");
-        ImGui::Text("Milestone 6");
+        ImGui::Text("Milestone 7");
         ImGui::Separator();
-        ImGui::Text("Goal: Load animation clips");
+        ImGui::Text("Goal: Sample one animation and draw animated skeleton");
         ImGui::Text("Model: %s", modelPath.c_str());
         ImGui::Text("Vertices: %zu", meshData.vertices.size());
         ImGui::Text("Indices: %zu", meshData.indices.size());
         ImGui::Text("Joints: %zu", skeleton.joints.size());
         ImGui::Text("Animation clips: %zu", animationClips.size());
+
+        const AnimationClip *currentClip = animator.GetCurrentClip();
+
+        if (currentClip != nullptr)
+        {
+            ImGui::Text("Current clip: %s", currentClip->name.c_str());
+            ImGui::Text("Animation time: %.3f / %.3f",
+                        animator.GetCurrentTime(),
+                        currentClip->duration);
+        }
+
+        ImGui::Text("Controls: 1 Survey, 2 Walk, 3 Run");
         ImGui::Checkbox("Show skeleton", &showSkeleton);
         ImGui::Text("FPS: %.1f", io.Framerate);
         ImGui::Text("Frame time: %.3f ms", 1000.0f / io.Framerate);
@@ -279,7 +323,7 @@ int main()
 
             debugDraw.AddSkeleton(
                 skeleton,
-                bindPoseGlobalMatrices,
+                animator.GetPose().global,
                 glm::vec3(1.0f, 1.0f, 0.0f));
 
             debugDraw.Draw(debugMvp);
