@@ -13,13 +13,23 @@ void Animator::Initialize(
     m_skeleton = skeleton;
     m_clips = clips;
     m_time = 0.0f;
+    m_previousTime = 0.0f;
     m_currentClipIndex = 0;
+    m_previousClipIndex = 0;
+    m_isBlending = false;
+    m_blendElapsed = 0.0f;
+    m_blendDuration = 0.0f;
 
     if (m_skeleton != nullptr)
     {
-        m_pose.Resize(m_skeleton->joints.size());
-        ResetPoseToBindPose();
-        ComputeGlobalPose();
+        const std::size_t jointCount = m_skeleton->joints.size();
+
+        m_pose.Resize(jointCount);
+        m_fromPose.Resize(jointCount);
+        m_toPose.Resize(jointCount);
+
+        ResetPoseToBindPose(m_pose);
+        ComputeGlobalPose(m_pose);
     }
 }
 
@@ -36,11 +46,52 @@ void Animator::Play(std::size_t clipIndex, bool resetTime)
     }
 
     m_currentClipIndex = clipIndex;
+    m_previousClipIndex = clipIndex;
+    m_isBlending = false;
+    m_blendElapsed = 0.0f;
+    m_blendDuration = 0.0f;
 
     if (resetTime)
     {
         m_time = 0.0f;
+        m_previousTime = 0.0f;
     }
+}
+
+void Animator::CrossFadeTo(std::size_t clipIndex, float blendDuration)
+{
+    if (m_clips == nullptr)
+    {
+        return;
+    }
+
+    if (clipIndex >= m_clips->size())
+    {
+        return;
+    }
+
+    if (clipIndex == m_currentClipIndex && !m_isBlending)
+    {
+        return;
+    }
+
+    if (blendDuration <= 0.0f)
+    {
+        Play(clipIndex, true);
+        return;
+    }
+
+    // The current clip becomes the source of the blend.
+    m_previousClipIndex = m_currentClipIndex;
+    m_previousTime = m_time;
+
+    // The requested clip becomes the destination.
+    m_currentClipIndex = clipIndex;
+    m_time = 0.0f;
+
+    m_isBlending = true;
+    m_blendElapsed = 0.0f;
+    m_blendDuration = blendDuration;
 }
 
 void Animator::Update(float deltaTime)
@@ -50,26 +101,79 @@ void Animator::Update(float deltaTime)
         return;
     }
 
-    const AnimationClip &clip = (*m_clips)[m_currentClipIndex];
-
-    if (clip.duration <= 0.0f)
+    if (m_currentClipIndex >= m_clips->size())
     {
         return;
     }
 
-    m_time += deltaTime;
+    const AnimationClip &currentClip = (*m_clips)[m_currentClipIndex];
 
-    // Loop the animation.
-    m_time = std::fmod(m_time, clip.duration);
+    if (currentClip.duration <= 0.0f)
+    {
+        return;
+    }
+
+    // Advance destination/current animation time.
+    m_time += deltaTime;
+    m_time = std::fmod(m_time, currentClip.duration);
 
     if (m_time < 0.0f)
     {
-        m_time += clip.duration;
+        m_time += currentClip.duration;
     }
 
-    ResetPoseToBindPose();
-    SampleClip(clip, m_time, m_pose);
-    ComputeGlobalPose();
+    if (!m_isBlending)
+    {
+        ResetPoseToBindPose(m_pose);
+        SampleClip(currentClip, m_time, m_pose);
+        ComputeGlobalPose(m_pose);
+        return;
+    }
+
+    if (m_previousClipIndex >= m_clips->size())
+    {
+        m_isBlending = false;
+        return;
+    }
+
+    const AnimationClip &previousClip = (*m_clips)[m_previousClipIndex];
+
+    if (previousClip.duration <= 0.0f)
+    {
+        m_isBlending = false;
+        return;
+    }
+
+    // Advance source/previous animation time too.
+    m_previousTime += deltaTime;
+    m_previousTime = std::fmod(m_previousTime, previousClip.duration);
+
+    if (m_previousTime < 0.0f)
+    {
+        m_previousTime += previousClip.duration;
+    }
+
+    m_blendElapsed += deltaTime;
+
+    const float weight = GetBlendWeight();
+
+    ResetPoseToBindPose(m_fromPose);
+    ResetPoseToBindPose(m_toPose);
+
+    SampleClip(previousClip, m_previousTime, m_fromPose);
+    SampleClip(currentClip, m_time, m_toPose);
+
+    BlendLocalPoses(m_fromPose, m_toPose, weight, m_pose);
+    ComputeGlobalPose(m_pose);
+
+    if (m_blendElapsed >= m_blendDuration)
+    {
+        m_isBlending = false;
+        m_blendElapsed = 0.0f;
+        m_blendDuration = 0.0f;
+        m_previousClipIndex = m_currentClipIndex;
+        m_previousTime = m_time;
+    }
 }
 
 const AnimationClip *Animator::GetCurrentClip() const
@@ -87,23 +191,48 @@ const AnimationClip *Animator::GetCurrentClip() const
     return &(*m_clips)[m_currentClipIndex];
 }
 
-void Animator::ResetPoseToBindPose()
+const AnimationClip *Animator::GetPreviousClip() const
+{
+    if (m_clips == nullptr || m_clips->empty())
+    {
+        return nullptr;
+    }
+
+    if (m_previousClipIndex >= m_clips->size())
+    {
+        return nullptr;
+    }
+
+    return &(*m_clips)[m_previousClipIndex];
+}
+
+float Animator::GetBlendWeight() const
+{
+    if (!m_isBlending || m_blendDuration <= 0.0f)
+    {
+        return 1.0f;
+    }
+
+    return std::clamp(m_blendElapsed / m_blendDuration, 0.0f, 1.0f);
+}
+
+void Animator::ResetPoseToBindPose(Pose &pose)
 {
     if (m_skeleton == nullptr)
     {
         return;
     }
 
-    m_pose.Resize(m_skeleton->joints.size());
+    pose.Resize(m_skeleton->joints.size());
 
     for (std::size_t i = 0; i < m_skeleton->joints.size(); ++i)
     {
-        m_pose.local[i] = m_skeleton->joints[i].bindLocalTransform;
-        m_pose.global[i] = glm::mat4(1.0f);
+        pose.local[i] = m_skeleton->joints[i].bindLocalTransform;
+        pose.global[i] = glm::mat4(1.0f);
     }
 }
 
-void Animator::ComputeGlobalPose()
+void Animator::ComputeGlobalPose(Pose &pose)
 {
     if (m_skeleton == nullptr)
     {
@@ -115,16 +244,16 @@ void Animator::ComputeGlobalPose()
         const Joint &joint = m_skeleton->joints[jointIndex];
 
         const glm::mat4 localMatrix =
-            TransformToMat4(m_pose.local[jointIndex]);
+            TransformToMat4(pose.local[jointIndex]);
 
         if (joint.parent < 0)
         {
-            m_pose.global[jointIndex] = localMatrix;
+            pose.global[jointIndex] = localMatrix;
         }
         else
         {
-            m_pose.global[jointIndex] =
-                m_pose.global[static_cast<std::size_t>(joint.parent)] *
+            pose.global[jointIndex] =
+                pose.global[static_cast<std::size_t>(joint.parent)] *
                 localMatrix;
         }
     }
@@ -172,6 +301,41 @@ void Animator::SampleClip(
                     jointTransform.scale);
             break;
         }
+    }
+}
+
+void Animator::BlendLocalPoses(
+    const Pose &fromPose,
+    const Pose &toPose,
+    float weight,
+    Pose &outPose)
+{
+    if (m_skeleton == nullptr)
+    {
+        return;
+    }
+
+    const std::size_t jointCount = m_skeleton->joints.size();
+
+    outPose.Resize(jointCount);
+
+    for (std::size_t jointIndex = 0; jointIndex < jointCount; ++jointIndex)
+    {
+        const Transform &a = fromPose.local[jointIndex];
+        const Transform &b = toPose.local[jointIndex];
+
+        Transform blended{};
+
+        blended.translation =
+            glm::mix(a.translation, b.translation, weight);
+
+        blended.rotation =
+            glm::normalize(glm::slerp(a.rotation, b.rotation, weight));
+
+        blended.scale =
+            glm::mix(a.scale, b.scale, weight);
+
+        outPose.local[jointIndex] = blended;
     }
 }
 

@@ -24,6 +24,22 @@ static void GlfwErrorCallback(int error, const char *description)
     std::cerr << "GLFW Error " << error << ": " << description << '\n';
 }
 
+std::size_t FindClipIndexByName(
+    const std::vector<AnimationClip> &clips,
+    const std::string &name,
+    std::size_t fallback)
+{
+    for (std::size_t i = 0; i < clips.size(); ++i)
+    {
+        if (clips[i].name == name)
+        {
+            return i;
+        }
+    }
+
+    return fallback;
+}
+
 int main()
 {
     bool showSkeleton = true;
@@ -169,12 +185,20 @@ int main()
         std::cerr << "No animation clips loaded from model.\n";
     }
 
+    std::size_t idleClipIndex = FindClipIndexByName(animationClips, "Idle", 0);
+    std::size_t surveyClipIndex = FindClipIndexByName(animationClips, "Survey", idleClipIndex);
+    std::size_t walkClipIndex = FindClipIndexByName(animationClips, "Walk", 1);
+    std::size_t runClipIndex = FindClipIndexByName(animationClips, "Run", 2);
+
+    // Fox's Idle clip is its Survey clip
+    idleClipIndex = surveyClipIndex;
+
     Animator animator;
     animator.Initialize(&skeleton, &animationClips);
 
     if (!animationClips.empty())
     {
-        animator.Play(1); // Fox: 0 Survey, 1 Walk, 2 Run
+        animator.Play(idleClipIndex);
     }
 
     std::vector<glm::mat4> jointMatrices;
@@ -214,6 +238,10 @@ int main()
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 450");
 
+    bool key1WasDown = false;
+    bool key2WasDown = false;
+    bool key3WasDown = false;
+
     double previousTime = glfwGetTime();
 
     while (!glfwWindowShouldClose(window))
@@ -228,20 +256,32 @@ int main()
         {
             glfwSetWindowShouldClose(window, GLFW_TRUE);
         }
-        if (glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS)
+        const bool key1IsDown = glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS;
+        const bool key2IsDown = glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS;
+        const bool key3IsDown = glfwGetKey(window, GLFW_KEY_3) == GLFW_PRESS;
+
+        const float idleBlendTime = 0.30f;
+        const float walkBlendTime = 0.25f;
+        const float runBlendTime = 0.20f;
+
+        if (key1IsDown && !key1WasDown)
         {
-            animator.Play(0);
+            animator.CrossFadeTo(idleClipIndex, idleBlendTime);
         }
 
-        if (glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS)
+        if (key2IsDown && !key2WasDown)
         {
-            animator.Play(1);
+            animator.CrossFadeTo(walkClipIndex, walkBlendTime);
         }
 
-        if (glfwGetKey(window, GLFW_KEY_3) == GLFW_PRESS)
+        if (key3IsDown && !key3WasDown)
         {
-            animator.Play(2);
+            animator.CrossFadeTo(runClipIndex, runBlendTime);
         }
+
+        key1WasDown = key1IsDown;
+        key2WasDown = key2IsDown;
+        key3WasDown = key3IsDown;
 
         animator.Update(deltaTime);
 
@@ -267,7 +307,25 @@ int main()
         ImGui::Text("Indices: %zu", meshData.indices.size());
         ImGui::Text("Joints: %zu", skeleton.joints.size());
         ImGui::Text("Animation clips: %zu", animationClips.size());
+        if (animator.IsBlending())
+        {
+            const AnimationClip *previousClip = animator.GetPreviousClip();
 
+            if (previousClip != nullptr)
+            {
+                ImGui::Text("Blending from: %s", previousClip->name.c_str());
+            }
+
+            ImGui::Text("Blend weight: %.2f", animator.GetBlendWeight());
+            ImGui::Text(
+                "Blend time: %.3f / %.3f",
+                animator.GetBlendElapsed(),
+                animator.GetBlendDuration());
+        }
+        else
+        {
+            ImGui::Text("Blending: no");
+        }
         const AnimationClip *currentClip = animator.GetCurrentClip();
 
         if (currentClip != nullptr)
@@ -279,7 +337,10 @@ int main()
                 currentClip->duration);
         }
 
-        ImGui::Text("Controls: 1 Survey, 2 Walk, 3 Run");
+        ImGui::Text("Controls:");
+        ImGui::Text("1 = Idle / Survey");
+        ImGui::Text("2 = Walk");
+        ImGui::Text("3 = Run");
         ImGui::Checkbox("Show skeleton", &showSkeleton);
         ImGui::Text("FPS: %.1f", io.Framerate);
         ImGui::Text("Frame time: %.3f ms", 1000.0f / io.Framerate);
