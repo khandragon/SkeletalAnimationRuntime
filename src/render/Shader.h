@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include <glad/glad.h>
 #include <glm/mat4x4.hpp>
@@ -15,6 +16,9 @@ public:
     void Destroy();
 
     void SetMat4(const std::string &name, const glm::mat4 &value) const;
+    void SetMat4Array(
+        const std::string &name,
+        const std::vector<glm::mat4> &values) const;
 
     GLuint GetProgram() const { return m_program; }
 

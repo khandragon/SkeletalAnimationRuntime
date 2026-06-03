@@ -83,6 +83,30 @@ void Shader::SetMat4(const std::string &name, const glm::mat4 &value) const
         glm::value_ptr(value));
 }
 
+// Setting an array of mat4 uniform variables in the shader program
+void Shader::SetMat4Array(
+    const std::string &name,
+    const std::vector<glm::mat4> &values) const
+{
+    if (values.empty())
+    {
+        return;
+    }
+
+    GLint location = glGetUniformLocation(m_program, name.c_str());
+
+    if (location == -1)
+    {
+        return;
+    }
+
+    glUniformMatrix4fv(
+        location,
+        static_cast<GLsizei>(values.size()),
+        GL_FALSE,
+        glm::value_ptr(values[0]));
+}
+
 // Helper function to check shader compilation status and print error logs if compilation fails
 bool Shader::CheckShaderCompile(GLuint shader, const std::string &name)
 {

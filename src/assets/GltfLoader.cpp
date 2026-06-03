@@ -753,6 +753,289 @@ namespace
             }
         }
     }
+    bool ReadJointAttribute(
+        const tinygltf::Model &model,
+        const tinygltf::Primitive &primitive,
+        std::vector<glm::uvec4> &outJoints)
+    {
+        outJoints.clear();
+
+        const auto it = primitive.attributes.find("JOINTS_0");
+
+        if (it == primitive.attributes.end())
+        {
+            return false;
+        }
+
+        if (!IsValidIndex(it->second, model.accessors.size()))
+        {
+            std::cerr << "JOINTS_0 has invalid accessor index.\n";
+            return false;
+        }
+
+        const tinygltf::Accessor &accessor =
+            model.accessors[static_cast<std::size_t>(it->second)];
+
+        if (accessor.type != TINYGLTF_TYPE_VEC4)
+        {
+            std::cerr << "Unsupported JOINTS_0 format. Expected VEC4.\n";
+            return false;
+        }
+
+        const unsigned char *data = GetAccessorData(model, accessor);
+
+        if (data == nullptr)
+        {
+            return false;
+        }
+
+        std::size_t stride = 0;
+
+        if (!GetAccessorStride(model, accessor, stride))
+        {
+            return false;
+        }
+
+        outJoints.resize(static_cast<std::size_t>(accessor.count));
+
+        for (std::size_t i = 0; i < static_cast<std::size_t>(accessor.count); ++i)
+        {
+            const unsigned char *address = data + i * stride;
+
+            switch (accessor.componentType)
+            {
+            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
+            {
+                std::uint8_t values[4]{};
+                std::memcpy(values, address, sizeof(values));
+
+                outJoints[i] = glm::uvec4(
+                    values[0],
+                    values[1],
+                    values[2],
+                    values[3]);
+
+                break;
+            }
+
+            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
+            {
+                std::uint16_t values[4]{};
+                std::memcpy(values, address, sizeof(values));
+
+                outJoints[i] = glm::uvec4(
+                    values[0],
+                    values[1],
+                    values[2],
+                    values[3]);
+
+                break;
+            }
+
+            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
+            {
+                std::uint32_t values[4]{};
+                std::memcpy(values, address, sizeof(values));
+
+                outJoints[i] = glm::uvec4(
+                    values[0],
+                    values[1],
+                    values[2],
+                    values[3]);
+
+                break;
+            }
+
+            default:
+                std::cerr << "Unsupported JOINTS_0 component type.\n";
+                return false;
+            }
+        }
+
+        return true;
+    }
+    bool ReadWeightAttribute(
+        const tinygltf::Model &model,
+        const tinygltf::Primitive &primitive,
+        std::vector<glm::vec4> &outWeights)
+    {
+        outWeights.clear();
+
+        const auto it = primitive.attributes.find("WEIGHTS_0");
+
+        if (it == primitive.attributes.end())
+        {
+            return false;
+        }
+
+        if (!IsValidIndex(it->second, model.accessors.size()))
+        {
+            std::cerr << "WEIGHTS_0 has invalid accessor index.\n";
+            return false;
+        }
+
+        const tinygltf::Accessor &accessor =
+            model.accessors[static_cast<std::size_t>(it->second)];
+
+        if (accessor.type != TINYGLTF_TYPE_VEC4)
+        {
+            std::cerr << "Unsupported WEIGHTS_0 format. Expected VEC4.\n";
+            return false;
+        }
+
+        const unsigned char *data = GetAccessorData(model, accessor);
+
+        if (data == nullptr)
+        {
+            return false;
+        }
+
+        std::size_t stride = 0;
+
+        if (!GetAccessorStride(model, accessor, stride))
+        {
+            return false;
+        }
+
+        outWeights.resize(static_cast<std::size_t>(accessor.count));
+
+        for (std::size_t i = 0; i < static_cast<std::size_t>(accessor.count); ++i)
+        {
+            const unsigned char *address = data + i * stride;
+
+            glm::vec4 weights{0.0f};
+
+            switch (accessor.componentType)
+            {
+            case TINYGLTF_COMPONENT_TYPE_FLOAT:
+            {
+                std::memcpy(&weights, address, sizeof(glm::vec4));
+                break;
+            }
+
+            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
+            {
+                std::uint8_t values[4]{};
+                std::memcpy(values, address, sizeof(values));
+
+                weights = glm::vec4(
+                    static_cast<float>(values[0]) / 255.0f,
+                    static_cast<float>(values[1]) / 255.0f,
+                    static_cast<float>(values[2]) / 255.0f,
+                    static_cast<float>(values[3]) / 255.0f);
+
+                break;
+            }
+
+            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
+            {
+                std::uint16_t values[4]{};
+                std::memcpy(values, address, sizeof(values));
+
+                weights = glm::vec4(
+                    static_cast<float>(values[0]) / 65535.0f,
+                    static_cast<float>(values[1]) / 65535.0f,
+                    static_cast<float>(values[2]) / 65535.0f,
+                    static_cast<float>(values[3]) / 65535.0f);
+
+                break;
+            }
+
+            default:
+                std::cerr << "Unsupported WEIGHTS_0 component type.\n";
+                return false;
+            }
+
+            const float sum =
+                weights.x + weights.y + weights.z + weights.w;
+
+            if (sum > 0.0f)
+            {
+                weights /= sum;
+            }
+            else
+            {
+                weights = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
+            }
+
+            outWeights[i] = weights;
+        }
+
+        return true;
+    }
+    bool BuildSkinnedMeshFromPrimitive(
+        const tinygltf::Model &model,
+        const tinygltf::Primitive &primitive,
+        SkinnedMeshData &outMesh)
+    {
+        std::vector<glm::vec3> positions;
+        std::vector<glm::vec3> normals;
+        std::vector<glm::vec2> texCoords;
+        std::vector<glm::uvec4> joints;
+        std::vector<glm::vec4> weights;
+
+        if (!ReadVec3Attribute(model, primitive, "POSITION", positions))
+        {
+            std::cerr << "Skinned mesh primitive has no POSITION attribute.\n";
+            return false;
+        }
+
+        const bool hasNormals =
+            ReadVec3Attribute(model, primitive, "NORMAL", normals);
+
+        const bool hasTexCoords =
+            ReadVec2Attribute(model, primitive, "TEXCOORD_0", texCoords);
+
+        if (!ReadJointAttribute(model, primitive, joints))
+        {
+            std::cerr << "Skinned mesh primitive has no JOINTS_0 attribute.\n";
+            return false;
+        }
+
+        if (!ReadWeightAttribute(model, primitive, weights))
+        {
+            std::cerr << "Skinned mesh primitive has no WEIGHTS_0 attribute.\n";
+            return false;
+        }
+
+        if (joints.size() < positions.size() ||
+            weights.size() < positions.size())
+        {
+            std::cerr << "Skinned mesh attribute count mismatch.\n";
+            return false;
+        }
+
+        outMesh.vertices.clear();
+        outMesh.vertices.resize(positions.size());
+
+        for (std::size_t i = 0; i < positions.size(); ++i)
+        {
+            SkinnedVertex vertex{};
+
+            vertex.position = positions[i];
+
+            if (hasNormals && i < normals.size())
+            {
+                vertex.normal = normals[i];
+            }
+
+            if (hasTexCoords && i < texCoords.size())
+            {
+                vertex.uv = texCoords[i];
+            }
+
+            vertex.joints = joints[i];
+            vertex.weights = weights[i];
+
+            outMesh.vertices[i] = vertex;
+        }
+
+        return ReadIndices(
+            model,
+            primitive,
+            outMesh.vertices.size(),
+            outMesh.indices);
+    }
 }
 
 bool GltfLoader::LoadFirstStaticMesh(
@@ -1025,4 +1308,51 @@ bool GltfLoader::LoadAnimationClips(
     std::cout << "Clip count: " << outClips.size() << '\n';
 
     return true;
+}
+
+bool GltfLoader::LoadFirstSkinnedMesh(
+    const std::string &path,
+    SkinnedMeshData &outMesh)
+{
+    outMesh.vertices.clear();
+    outMesh.indices.clear();
+
+    tinygltf::Model model;
+
+    if (!LoadGltfModelFromFile(path, model))
+    {
+        return false;
+    }
+
+    if (model.meshes.empty())
+    {
+        std::cerr << "glTF file contains no meshes: " << path << '\n';
+        return false;
+    }
+
+    const tinygltf::Mesh &gltfMesh = model.meshes[0];
+
+    for (const tinygltf::Primitive &primitive : gltfMesh.primitives)
+    {
+        if (primitive.mode != TINYGLTF_MODE_TRIANGLES)
+        {
+            continue;
+        }
+
+        if (!BuildSkinnedMeshFromPrimitive(model, primitive, outMesh))
+        {
+            continue;
+        }
+
+        std::cout << "Loaded skinned mesh from " << path << '\n';
+        std::cout << "Vertices: " << outMesh.vertices.size() << '\n';
+        std::cout << "Indices: " << outMesh.indices.size() << '\n';
+
+        return true;
+    }
+
+    std::cerr << "No supported skinned triangle mesh primitive found in: "
+              << path << '\n';
+
+    return false;
 }

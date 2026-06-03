@@ -1,3 +1,4 @@
+#include <cfloat>
 #include <iostream>
 
 #include <glad/glad.h>
@@ -72,21 +73,38 @@ int main()
     const char *vertexShaderSource = R"(
         #version 450 core
 
+        const int MAX_JOINTS = 128;
+
         layout(location = 0) in vec3 aPosition;
         layout(location = 1) in vec3 aNormal;
         layout(location = 2) in vec2 aTexCoord;
+        layout(location = 3) in uvec4 aJoints;
+        layout(location = 4) in vec4 aWeights;
 
         uniform mat4 uMVP;
+        uniform mat4 uJointMatrices[MAX_JOINTS];
 
         out vec3 vNormal;
         out vec2 vTexCoord;
 
         void main()
         {
-            vNormal = aNormal;
+            mat4 skin =
+                aWeights.x * uJointMatrices[aJoints.x] +
+                aWeights.y * uJointMatrices[aJoints.y] +
+                aWeights.z * uJointMatrices[aJoints.z] +
+                aWeights.w * uJointMatrices[aJoints.w];
+
+            vec4 skinnedPosition =
+                skin * vec4(aPosition, 1.0);
+
+            vec3 skinnedNormal =
+                mat3(skin) * aNormal;
+
+            vNormal = skinnedNormal;
             vTexCoord = aTexCoord;
 
-            gl_Position = uMVP * vec4(aPosition, 1.0);
+            gl_Position = uMVP * skinnedPosition;
         }
     )";
 
@@ -116,13 +134,13 @@ int main()
         return 1;
     }
 
-    StaticMeshData meshData;
+    SkinnedMeshData meshData;
 
     const std::string modelPath = "assets/characters/Fox.glb";
 
-    if (!GltfLoader::LoadFirstStaticMesh(modelPath, meshData))
+    if (!GltfLoader::LoadFirstSkinnedMesh(modelPath, meshData))
     {
-        std::cerr << "Failed to load model: " << modelPath << '\n';
+        std::cerr << "Failed to load skinned model: " << modelPath << '\n';
         meshShader.Destroy();
         glfwDestroyWindow(window);
         glfwTerminate();
@@ -159,12 +177,12 @@ int main()
         animator.Play(1); // Fox: 0 Survey, 1 Walk, 2 Run
     }
 
-    std::vector<glm::mat4> bindPoseGlobalMatrices;
-    ComputeBindPoseFromInverseBindMatrices(skeleton, bindPoseGlobalMatrices);
+    std::vector<glm::mat4> jointMatrices;
+    jointMatrices.resize(skeleton.joints.size(), glm::mat4(1.0f));
 
     Mesh mesh;
 
-    if (!mesh.Create(meshData.vertices, meshData.indices))
+    if (!mesh.CreateSkinned(meshData.vertices, meshData.indices))
     {
         std::cerr << "Failed to create OpenGL mesh\n";
         meshShader.Destroy();
@@ -227,14 +245,23 @@ int main()
 
         animator.Update(deltaTime);
 
+        const Pose &currentPose = animator.GetPose();
+
+        for (std::size_t jointIndex = 0; jointIndex < skeleton.joints.size(); ++jointIndex)
+        {
+            jointMatrices[jointIndex] =
+                currentPose.global[jointIndex] *
+                skeleton.joints[jointIndex].inverseBindMatrix;
+        }
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
         ImGui::Begin("Animation Runtime Debug");
-        ImGui::Text("Milestone 7");
+
+        ImGui::Text("Milestone 8");
         ImGui::Separator();
-        ImGui::Text("Goal: Sample one animation and draw animated skeleton");
+        ImGui::Text("Goal: GPU skinning animated mesh");
         ImGui::Text("Model: %s", modelPath.c_str());
         ImGui::Text("Vertices: %zu", meshData.vertices.size());
         ImGui::Text("Indices: %zu", meshData.indices.size());
@@ -246,15 +273,17 @@ int main()
         if (currentClip != nullptr)
         {
             ImGui::Text("Current clip: %s", currentClip->name.c_str());
-            ImGui::Text("Animation time: %.3f / %.3f",
-                        animator.GetCurrentTime(),
-                        currentClip->duration);
+            ImGui::Text(
+                "Animation time: %.3f / %.3f",
+                animator.GetCurrentTime(),
+                currentClip->duration);
         }
 
         ImGui::Text("Controls: 1 Survey, 2 Walk, 3 Run");
         ImGui::Checkbox("Show skeleton", &showSkeleton);
         ImGui::Text("FPS: %.1f", io.Framerate);
         ImGui::Text("Frame time: %.3f ms", 1000.0f / io.Framerate);
+
         ImGui::End();
 
         ImGui::Render();
@@ -272,7 +301,7 @@ int main()
         glm::vec3 meshMin(FLT_MAX);
         glm::vec3 meshMax(-FLT_MAX);
 
-        for (const StaticVertex &vertex : meshData.vertices)
+        for (const auto &vertex : meshData.vertices)
         {
             meshMin = glm::min(meshMin, vertex.position);
             meshMax = glm::max(meshMax, vertex.position);
@@ -315,6 +344,7 @@ int main()
 
         meshShader.Use();
         meshShader.SetMat4("uMVP", mvp);
+        meshShader.SetMat4Array("uJointMatrices[0]", jointMatrices);
         mesh.Draw();
 
         if (showSkeleton)

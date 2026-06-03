@@ -13,6 +13,16 @@ struct StaticVertex
     glm::vec2 texCoord{0.0f};
 };
 
+struct SkinnedVertex
+{
+    glm::vec3 position{0.0f};
+    glm::vec3 normal{0.0f, 0.0f, 1.0f};
+    glm::vec2 uv{0.0f};
+
+    glm::uvec4 joints{0, 0, 0, 0};
+    glm::vec4 weights{1.0f, 0.0f, 0.0f, 0.0f};
+};
+
 class Mesh
 {
 public:
@@ -20,6 +30,10 @@ public:
 
     bool Create(
         const std::vector<StaticVertex> &vertices,
+        const std::vector<std::uint32_t> &indices);
+
+    bool CreateSkinned(
+        const std::vector<SkinnedVertex> &vertices,
         const std::vector<std::uint32_t> &indices);
 
     void Draw() const;

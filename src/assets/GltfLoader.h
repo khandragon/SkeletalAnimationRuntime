@@ -14,6 +14,12 @@ struct StaticMeshData
     std::vector<std::uint32_t> indices;
 };
 
+struct SkinnedMeshData
+{
+    std::vector<SkinnedVertex> vertices;
+    std::vector<std::uint32_t> indices;
+};
+
 class GltfLoader
 {
 public:
@@ -28,4 +34,8 @@ public:
     static bool LoadAnimationClips(
         const std::string &path,
         std::vector<AnimationClip> &outClips);
+
+    static bool LoadFirstSkinnedMesh(
+        const std::string &path,
+        SkinnedMeshData &outMesh);
 };
