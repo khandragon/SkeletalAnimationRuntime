@@ -1,0 +1,57 @@
+{
+  "character": "fox",
+  "model": "assets/characters/Fox.glb",
+  "initial_state": "idle",
+
+  "parameters": {
+    "speed": 0.0
+  },
+
+  "states": {
+    "idle": {
+      "clip": "Survey",
+      "loop": true
+    },
+    "walk": {
+      "clip": "Walk",
+      "loop": true
+    },
+    "run": {
+      "clip": "Run",
+      "loop": true
+    }
+  },
+
+  "transitions": [
+    {
+      "from": "idle",
+      "to": "walk",
+      "condition": "speed > 0.1",
+      "blend_time": 1.25
+    },
+    {
+      "from": "walk",
+      "to": "idle",
+      "condition": "speed < 0.1",
+      "blend_time": 0.25
+    },
+    {
+      "from": "walk",
+      "to": "run",
+      "condition": "speed > 3.0",
+      "blend_time": 0.20
+    },
+    {
+      "from": "run",
+      "to": "idle",
+      "condition": "speed < 0.1",
+      "blend_time": 0.30
+    },
+    {
+      "from": "run",
+      "to": "walk",
+      "condition": "speed < 3.0",
+      "blend_time": 0.20
+    }
+  ]
+}
