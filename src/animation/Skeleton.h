@@ -21,3 +21,11 @@ struct Skeleton
 };
 
 void PrintSkeletonHierarchy(const Skeleton &skeleton);
+
+void ComputeBindPoseGlobalMatrices(
+    const Skeleton &skeleton,
+    std::vector<glm::mat4> &outGlobalMatrices);
+
+void ComputeBindPoseFromInverseBindMatrices(
+    const Skeleton &skeleton,
+    std::vector<glm::mat4> &outGlobalMatrices);

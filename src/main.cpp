@@ -10,6 +10,7 @@
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 
+#include "render/DebugDraw.h"
 #include "assets/GltfLoader.h"
 #include "render/Mesh.h"
 #include "render/Shader.h"
@@ -21,6 +22,8 @@ static void GlfwErrorCallback(int error, const char *description)
 
 int main()
 {
+    bool showSkeleton = true;
+
     glfwSetErrorCallback(GlfwErrorCallback);
 
     if (!glfwInit())
@@ -134,11 +137,26 @@ int main()
         std::cerr << "No skeleton loaded from model.\n";
     }
 
+    std::vector<glm::mat4> bindPoseGlobalMatrices;
+    ComputeBindPoseFromInverseBindMatrices(skeleton, bindPoseGlobalMatrices);
+
     Mesh mesh;
 
     if (!mesh.Create(meshData.vertices, meshData.indices))
     {
         std::cerr << "Failed to create OpenGL mesh\n";
+        meshShader.Destroy();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return 1;
+    }
+
+    DebugDraw debugDraw;
+
+    if (!debugDraw.Create())
+    {
+        std::cerr << "Failed to create DebugDraw\n";
+        mesh.Destroy();
         meshShader.Destroy();
         glfwDestroyWindow(window);
         glfwTerminate();
@@ -170,13 +188,14 @@ int main()
         ImGui::NewFrame();
 
         ImGui::Begin("Animation Runtime Debug");
-        ImGui::Text("Milestone 4");
+        ImGui::Text("Milestone 5");
         ImGui::Separator();
-        ImGui::Text("Goal: Load skeleton data");
+        ImGui::Text("Goal: Draw bind-pose debug skeleton");
         ImGui::Text("Model: %s", modelPath.c_str());
         ImGui::Text("Vertices: %zu", meshData.vertices.size());
         ImGui::Text("Indices: %zu", meshData.indices.size());
         ImGui::Text("Joints: %zu", skeleton.joints.size());
+        ImGui::Checkbox("Show skeleton", &showSkeleton);
         ImGui::Text("FPS: %.1f", io.Framerate);
         ImGui::Text("Frame time: %.3f ms", 1000.0f / io.Framerate);
         ImGui::End();
@@ -193,6 +212,21 @@ int main()
                       static_cast<float>(framebufferHeight)
                 : 1.0f;
 
+        glm::vec3 meshMin(FLT_MAX);
+        glm::vec3 meshMax(-FLT_MAX);
+
+        for (const StaticVertex &vertex : meshData.vertices)
+        {
+            meshMin = glm::min(meshMin, vertex.position);
+            meshMax = glm::max(meshMax, vertex.position);
+        }
+
+        glm::vec3 meshCenter = (meshMin + meshMax) * 0.5f;
+        glm::vec3 meshSize = meshMax - meshMin;
+
+        float largestAxis = glm::max(meshSize.x, glm::max(meshSize.y, meshSize.z));
+        float modelScale = 2.0f / largestAxis;
+
         glm::mat4 model = glm::mat4(1.0f);
 
         model = glm::rotate(
@@ -200,9 +234,13 @@ int main()
             static_cast<float>(glfwGetTime()) * 0.5f,
             glm::vec3(0.0f, 1.0f, 0.0f));
 
+        model = glm::scale(model, glm::vec3(modelScale));
+
+        model = glm::translate(model, -meshCenter);
+
         glm::mat4 view = glm::lookAt(
-            glm::vec3(0.0f, 1.0f, 3.0f),
-            glm::vec3(0.0f, 0.0f, 0.0f),
+            glm::vec3(0.0f, 1.5f, 5.0f),
+            glm::vec3(0.0f, 0.5f, 0.0f),
             glm::vec3(0.0f, 1.0f, 0.0f));
 
         glm::mat4 projection = glm::perspective(
@@ -212,6 +250,7 @@ int main()
             100.0f);
 
         glm::mat4 mvp = projection * view * model;
+        glm::mat4 debugMvp = projection * view * model;
 
         glViewport(0, 0, framebufferWidth, framebufferHeight);
         glClearColor(0.08f, 0.09f, 0.11f, 1.0f);
@@ -221,11 +260,24 @@ int main()
         meshShader.SetMat4("uMVP", mvp);
         mesh.Draw();
 
+        if (showSkeleton)
+        {
+            debugDraw.Begin();
+
+            debugDraw.AddSkeleton(
+                skeleton,
+                bindPoseGlobalMatrices,
+                glm::vec3(1.0f, 1.0f, 0.0f));
+
+            debugDraw.Draw(debugMvp);
+        }
+
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
         glfwSwapBuffers(window);
     }
 
+    debugDraw.Destroy();
     mesh.Destroy();
     meshShader.Destroy();
 

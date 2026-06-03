@@ -1,9 +1,12 @@
 #include "GltfLoader.h"
+
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <string>
+#include <vector>
 
 #define TINYGLTF_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
@@ -13,13 +16,21 @@
 
 namespace
 {
+    bool IsValidIndex(int index, std::size_t count)
+    {
+        return index >= 0 && static_cast<std::size_t>(index) < count;
+    }
+
     std::string ToLower(std::string value)
     {
-        std::transform(value.begin(), value.end(), value.begin(),
-                       [](unsigned char c)
-                       {
-                           return static_cast<char>(std::tolower(c));
-                       });
+        std::transform(
+            value.begin(),
+            value.end(),
+            value.begin(),
+            [](unsigned char c)
+            {
+                return static_cast<char>(std::tolower(c));
+            });
 
         return value;
     }
@@ -31,10 +42,7 @@ namespace
             return false;
         }
 
-        return text.compare(
-                   text.size() - suffix.size(),
-                   suffix.size(),
-                   suffix) == 0;
+        return text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
     }
 
     std::size_t GetComponentSizeInBytes(int componentType)
@@ -74,38 +82,150 @@ namespace
         case TINYGLTF_TYPE_VEC4:
             return 4;
 
+        case TINYGLTF_TYPE_MAT2:
+            return 4;
+
+        case TINYGLTF_TYPE_MAT3:
+            return 9;
+
+        case TINYGLTF_TYPE_MAT4:
+            return 16;
+
         default:
             return 0;
         }
     }
 
-    std::size_t GetAccessorStride(
+    bool GetAccessorStride(
         const tinygltf::Model &model,
-        const tinygltf::Accessor &accessor)
+        const tinygltf::Accessor &accessor,
+        std::size_t &outStride)
     {
+        outStride = 0;
+
+        if (!IsValidIndex(accessor.bufferView, model.bufferViews.size()))
+        {
+            std::cerr << "Accessor has invalid bufferView index: "
+                      << accessor.bufferView << '\n';
+            return false;
+        }
+
         const tinygltf::BufferView &bufferView =
             model.bufferViews[static_cast<std::size_t>(accessor.bufferView)];
 
         if (bufferView.byteStride != 0)
         {
-            return static_cast<std::size_t>(bufferView.byteStride);
+            outStride = static_cast<std::size_t>(bufferView.byteStride);
+            return true;
         }
 
-        return GetComponentSizeInBytes(accessor.componentType) *
-               GetNumComponents(accessor.type);
+        const std::size_t componentSize = GetComponentSizeInBytes(accessor.componentType);
+        const std::size_t componentCount = GetNumComponents(accessor.type);
+
+        if (componentSize == 0 || componentCount == 0)
+        {
+            std::cerr << "Unsupported accessor format when calculating stride.\n";
+            return false;
+        }
+
+        outStride = componentSize * componentCount;
+        return true;
     }
 
     const unsigned char *GetAccessorData(
         const tinygltf::Model &model,
         const tinygltf::Accessor &accessor)
     {
+        if (!IsValidIndex(accessor.bufferView, model.bufferViews.size()))
+        {
+            std::cerr << "Accessor has invalid bufferView index: "
+                      << accessor.bufferView << '\n';
+            return nullptr;
+        }
+
         const tinygltf::BufferView &bufferView =
             model.bufferViews[static_cast<std::size_t>(accessor.bufferView)];
+
+        if (!IsValidIndex(bufferView.buffer, model.buffers.size()))
+        {
+            std::cerr << "BufferView has invalid buffer index: "
+                      << bufferView.buffer << '\n';
+            return nullptr;
+        }
 
         const tinygltf::Buffer &buffer =
             model.buffers[static_cast<std::size_t>(bufferView.buffer)];
 
-        return buffer.data.data() + bufferView.byteOffset + accessor.byteOffset;
+        const std::size_t byteOffset =
+            static_cast<std::size_t>(bufferView.byteOffset + accessor.byteOffset);
+
+        if (byteOffset >= buffer.data.size())
+        {
+            std::cerr << "Accessor byte offset is outside the buffer.\n";
+            return nullptr;
+        }
+
+        return buffer.data.data() + byteOffset;
+    }
+
+    template <typename TValue>
+    bool ReadFloatAttribute(
+        const tinygltf::Model &model,
+        const tinygltf::Primitive &primitive,
+        const std::string &attributeName,
+        int expectedAccessorType,
+        std::vector<TValue> &outValues)
+    {
+        outValues.clear();
+
+        const auto attributeIt = primitive.attributes.find(attributeName);
+        if (attributeIt == primitive.attributes.end())
+        {
+            return false;
+        }
+
+        if (!IsValidIndex(attributeIt->second, model.accessors.size()))
+        {
+            std::cerr << "Attribute " << attributeName
+                      << " has invalid accessor index: "
+                      << attributeIt->second << '\n';
+            return false;
+        }
+
+        const tinygltf::Accessor &accessor =
+            model.accessors[static_cast<std::size_t>(attributeIt->second)];
+
+        if (accessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT ||
+            accessor.type != expectedAccessorType)
+        {
+            std::cerr << "Unsupported " << attributeName
+                      << " format. Expected FLOAT with accessor type "
+                      << expectedAccessorType << ".\n";
+            return false;
+        }
+
+        const unsigned char *data = GetAccessorData(model, accessor);
+        if (data == nullptr)
+        {
+            return false;
+        }
+
+        std::size_t stride = 0;
+        if (!GetAccessorStride(model, accessor, stride))
+        {
+            return false;
+        }
+
+        outValues.resize(static_cast<std::size_t>(accessor.count));
+
+        for (std::size_t i = 0; i < static_cast<std::size_t>(accessor.count); ++i)
+        {
+            TValue value{};
+            std::memcpy(&value, data + i * stride, sizeof(TValue));
+            outValues[i] = value;
+        }
+
+        return true;
     }
 
     bool ReadVec3Attribute(
@@ -114,37 +234,12 @@ namespace
         const std::string &attributeName,
         std::vector<glm::vec3> &outValues)
     {
-        auto it = primitive.attributes.find(attributeName);
-
-        if (it == primitive.attributes.end())
-        {
-            return false;
-        }
-
-        const tinygltf::Accessor &accessor =
-            model.accessors[static_cast<std::size_t>(it->second)];
-
-        if (accessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT ||
-            accessor.type != TINYGLTF_TYPE_VEC3)
-        {
-            std::cerr << "Unsupported " << attributeName
-                      << " format. Expected FLOAT VEC3.\n";
-            return false;
-        }
-
-        const unsigned char *data = GetAccessorData(model, accessor);
-        const std::size_t stride = GetAccessorStride(model, accessor);
-
-        outValues.resize(static_cast<std::size_t>(accessor.count));
-
-        for (std::size_t i = 0; i < accessor.count; ++i)
-        {
-            glm::vec3 value{};
-            std::memcpy(&value, data + i * stride, sizeof(glm::vec3));
-            outValues[i] = value;
-        }
-
-        return true;
+        return ReadFloatAttribute(
+            model,
+            primitive,
+            attributeName,
+            TINYGLTF_TYPE_VEC3,
+            outValues);
     }
 
     bool ReadVec2Attribute(
@@ -153,37 +248,50 @@ namespace
         const std::string &attributeName,
         std::vector<glm::vec2> &outValues)
     {
-        auto it = primitive.attributes.find(attributeName);
+        return ReadFloatAttribute(
+            model,
+            primitive,
+            attributeName,
+            TINYGLTF_TYPE_VEC2,
+            outValues);
+    }
 
-        if (it == primitive.attributes.end())
+    bool ReadIndexValue(
+        int componentType,
+        const unsigned char *address,
+        std::uint32_t &outValue)
+    {
+        switch (componentType)
         {
+        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
+        {
+            std::uint8_t value = 0;
+            std::memcpy(&value, address, sizeof(value));
+            outValue = value;
+            return true;
+        }
+
+        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
+        {
+            std::uint16_t value = 0;
+            std::memcpy(&value, address, sizeof(value));
+            outValue = value;
+            return true;
+        }
+
+        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
+        {
+            std::uint32_t value = 0;
+            std::memcpy(&value, address, sizeof(value));
+            outValue = value;
+            return true;
+        }
+
+        default:
+            std::cerr << "Unsupported index component type: "
+                      << componentType << '\n';
             return false;
         }
-
-        const tinygltf::Accessor &accessor =
-            model.accessors[static_cast<std::size_t>(it->second)];
-
-        if (accessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT ||
-            accessor.type != TINYGLTF_TYPE_VEC2)
-        {
-            std::cerr << "Unsupported " << attributeName
-                      << " format. Expected FLOAT VEC2.\n";
-            return false;
-        }
-
-        const unsigned char *data = GetAccessorData(model, accessor);
-        const std::size_t stride = GetAccessorStride(model, accessor);
-
-        outValues.resize(static_cast<std::size_t>(accessor.count));
-
-        for (std::size_t i = 0; i < accessor.count; ++i)
-        {
-            glm::vec2 value{};
-            std::memcpy(&value, data + i * stride, sizeof(glm::vec2));
-            outValues[i] = value;
-        }
-
-        return true;
     }
 
     bool ReadIndices(
@@ -192,6 +300,8 @@ namespace
         std::size_t vertexCount,
         std::vector<std::uint32_t> &outIndices)
     {
+        outIndices.clear();
+
         if (primitive.indices < 0)
         {
             outIndices.resize(vertexCount);
@@ -204,6 +314,13 @@ namespace
             return true;
         }
 
+        if (!IsValidIndex(primitive.indices, model.accessors.size()))
+        {
+            std::cerr << "Primitive has invalid index accessor: "
+                      << primitive.indices << '\n';
+            return false;
+        }
+
         const tinygltf::Accessor &accessor =
             model.accessors[static_cast<std::size_t>(primitive.indices)];
 
@@ -214,42 +331,25 @@ namespace
         }
 
         const unsigned char *data = GetAccessorData(model, accessor);
-        const std::size_t stride = GetAccessorStride(model, accessor);
+        if (data == nullptr)
+        {
+            return false;
+        }
+
+        std::size_t stride = 0;
+        if (!GetAccessorStride(model, accessor, stride))
+        {
+            return false;
+        }
 
         outIndices.resize(static_cast<std::size_t>(accessor.count));
 
-        for (std::size_t i = 0; i < accessor.count; ++i)
+        for (std::size_t i = 0; i < static_cast<std::size_t>(accessor.count); ++i)
         {
             const unsigned char *indexAddress = data + i * stride;
 
-            switch (accessor.componentType)
+            if (!ReadIndexValue(accessor.componentType, indexAddress, outIndices[i]))
             {
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
-            {
-                std::uint8_t value = 0;
-                std::memcpy(&value, indexAddress, sizeof(value));
-                outIndices[i] = value;
-                break;
-            }
-
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
-            {
-                std::uint16_t value = 0;
-                std::memcpy(&value, indexAddress, sizeof(value));
-                outIndices[i] = value;
-                break;
-            }
-
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
-            {
-                std::uint32_t value = 0;
-                std::memcpy(&value, indexAddress, sizeof(value));
-                outIndices[i] = value;
-                break;
-            }
-
-            default:
-                std::cerr << "Unsupported index component type.\n";
                 return false;
             }
         }
@@ -262,29 +362,19 @@ namespace
         tinygltf::Model &model)
     {
         tinygltf::TinyGLTF loader;
-
         std::string error;
         std::string warning;
 
         const std::string lowerPath = ToLower(path);
-
         bool loaded = false;
 
         if (EndsWith(lowerPath, ".glb"))
         {
-            loaded = loader.LoadBinaryFromFile(
-                &model,
-                &error,
-                &warning,
-                path);
+            loaded = loader.LoadBinaryFromFile(&model, &error, &warning, path);
         }
         else if (EndsWith(lowerPath, ".gltf"))
         {
-            loaded = loader.LoadASCIIFromFile(
-                &model,
-                &error,
-                &warning,
-                path);
+            loaded = loader.LoadASCIIFromFile(&model, &error, &warning, path);
         }
         else
         {
@@ -311,6 +401,55 @@ namespace
         return true;
     }
 
+    bool BuildStaticMeshFromPrimitive(
+        const tinygltf::Model &model,
+        const tinygltf::Primitive &primitive,
+        StaticMeshData &outMesh)
+    {
+        std::vector<glm::vec3> positions;
+        std::vector<glm::vec3> normals;
+        std::vector<glm::vec2> texCoords;
+
+        if (!ReadVec3Attribute(model, primitive, "POSITION", positions))
+        {
+            std::cerr << "Mesh primitive has no supported POSITION attribute.\n";
+            return false;
+        }
+
+        const bool hasNormals =
+            ReadVec3Attribute(model, primitive, "NORMAL", normals);
+
+        const bool hasTexCoords =
+            ReadVec2Attribute(model, primitive, "TEXCOORD_0", texCoords);
+
+        outMesh.vertices.clear();
+        outMesh.vertices.resize(positions.size());
+
+        for (std::size_t i = 0; i < positions.size(); ++i)
+        {
+            StaticVertex vertex{};
+            vertex.position = positions[i];
+
+            if (hasNormals && i < normals.size())
+            {
+                vertex.normal = normals[i];
+            }
+
+            if (hasTexCoords && i < texCoords.size())
+            {
+                vertex.texCoord = texCoords[i];
+            }
+
+            outMesh.vertices[i] = vertex;
+        }
+
+        return ReadIndices(
+            model,
+            primitive,
+            outMesh.vertices.size(),
+            outMesh.indices);
+    }
+
     Transform ReadNodeLocalTransform(const tinygltf::Node &node)
     {
         Transform transform{};
@@ -325,8 +464,8 @@ namespace
 
         if (node.rotation.size() == 4)
         {
-            // glTF stores quaternion as x, y, z, w.
-            // GLM constructor wants w, x, y, z.
+            // glTF stores quaternions as x, y, z, w.
+            // GLM's quat constructor expects w, x, y, z.
             transform.rotation = glm::quat(
                 static_cast<float>(node.rotation[3]),
                 static_cast<float>(node.rotation[0]),
@@ -358,6 +497,13 @@ namespace
             return true;
         }
 
+        if (!IsValidIndex(skin.inverseBindMatrices, model.accessors.size()))
+        {
+            std::cerr << "Skin has invalid inverseBindMatrices accessor: "
+                      << skin.inverseBindMatrices << '\n';
+            return false;
+        }
+
         const tinygltf::Accessor &accessor =
             model.accessors[static_cast<std::size_t>(skin.inverseBindMatrices)];
 
@@ -369,11 +515,20 @@ namespace
         }
 
         const unsigned char *data = GetAccessorData(model, accessor);
-        const std::size_t stride = GetAccessorStride(model, accessor);
+        if (data == nullptr)
+        {
+            return false;
+        }
+
+        std::size_t stride = 0;
+        if (!GetAccessorStride(model, accessor, stride))
+        {
+            return false;
+        }
 
         outMatrices.resize(static_cast<std::size_t>(accessor.count));
 
-        for (std::size_t i = 0; i < accessor.count; ++i)
+        for (std::size_t i = 0; i < static_cast<std::size_t>(accessor.count); ++i)
         {
             glm::mat4 matrix{1.0f};
             std::memcpy(&matrix, data + i * stride, sizeof(glm::mat4));
@@ -395,13 +550,25 @@ namespace
 
             for (int childNodeIndex : node.children)
             {
-                if (childNodeIndex >= 0 &&
-                    childNodeIndex < static_cast<int>(outNodeParents.size()))
+                if (IsValidIndex(childNodeIndex, outNodeParents.size()))
                 {
                     outNodeParents[static_cast<std::size_t>(childNodeIndex)] =
                         static_cast<int>(nodeIndex);
                 }
             }
+        }
+    }
+
+    void PrintSkeletonDebug(const Skeleton &skeleton)
+    {
+        std::cout << "Joint hierarchy:\n";
+
+        for (std::size_t i = 0; i < skeleton.joints.size(); ++i)
+        {
+            const Joint &joint = skeleton.joints[i];
+            std::cout << "  " << i
+                      << " name=\"" << joint.name << "\""
+                      << " parent=" << joint.parent << '\n';
         }
     }
 }
@@ -413,57 +580,16 @@ bool GltfLoader::LoadFirstStaticMesh(
     outMesh.vertices.clear();
     outMesh.indices.clear();
 
-    tinygltf::TinyGLTF loader;
     tinygltf::Model model;
 
-    std::string error;
-    std::string warning;
-
-    const std::string lowerPath = ToLower(path);
-
-    bool loaded = false;
-
-    if (EndsWith(lowerPath, ".glb"))
+    if (!LoadGltfModelFromFile(path, model))
     {
-        loaded = loader.LoadBinaryFromFile(
-            &model,
-            &error,
-            &warning,
-            path);
-    }
-    else if (EndsWith(lowerPath, ".gltf"))
-    {
-        loaded = loader.LoadASCIIFromFile(
-            &model,
-            &error,
-            &warning,
-            path);
-    }
-    else
-    {
-        std::cerr << "Unsupported file extension: " << path << '\n';
-        return false;
-    }
-
-    if (!warning.empty())
-    {
-        std::cout << "glTF warning: " << warning << '\n';
-    }
-
-    if (!error.empty())
-    {
-        std::cerr << "glTF error: " << error << '\n';
-    }
-
-    if (!loaded)
-    {
-        std::cerr << "Failed to load glTF file: " << path << '\n';
         return false;
     }
 
     if (model.meshes.empty())
     {
-        std::cerr << "glTF file contains no meshes.\n";
+        std::cerr << "glTF file contains no meshes: " << path << '\n';
         return false;
     }
 
@@ -476,49 +602,9 @@ bool GltfLoader::LoadFirstStaticMesh(
             continue;
         }
 
-        std::vector<glm::vec3> positions;
-        std::vector<glm::vec3> normals;
-        std::vector<glm::vec2> texCoords;
-
-        if (!ReadVec3Attribute(model, primitive, "POSITION", positions))
+        if (!BuildStaticMeshFromPrimitive(model, primitive, outMesh))
         {
-            std::cerr << "Mesh primitive has no POSITION attribute.\n";
             continue;
-        }
-
-        const bool hasNormals =
-            ReadVec3Attribute(model, primitive, "NORMAL", normals);
-
-        const bool hasTexCoords =
-            ReadVec2Attribute(model, primitive, "TEXCOORD_0", texCoords);
-
-        outMesh.vertices.resize(positions.size());
-
-        for (std::size_t i = 0; i < positions.size(); ++i)
-        {
-            StaticVertex vertex{};
-            vertex.position = positions[i];
-
-            if (hasNormals && i < normals.size())
-            {
-                vertex.normal = normals[i];
-            }
-
-            if (hasTexCoords && i < texCoords.size())
-            {
-                vertex.texCoord = texCoords[i];
-            }
-
-            outMesh.vertices[i] = vertex;
-        }
-
-        if (!ReadIndices(
-                model,
-                primitive,
-                outMesh.vertices.size(),
-                outMesh.indices))
-        {
-            return false;
         }
 
         std::cout << "Loaded mesh from " << path << '\n';
@@ -528,7 +614,8 @@ bool GltfLoader::LoadFirstStaticMesh(
         return true;
     }
 
-    std::cerr << "No triangle mesh primitive found.\n";
+    std::cerr << "No supported triangle mesh primitive found in: "
+              << path << '\n';
     return false;
 }
 
@@ -547,7 +634,8 @@ bool GltfLoader::LoadFirstSkeleton(
 
     if (model.skins.empty())
     {
-        std::cerr << "glTF file contains no skins/skeletons: " << path << '\n';
+        std::cerr << "glTF file contains no skins/skeletons: "
+                  << path << '\n';
         return false;
     }
 
@@ -569,17 +657,18 @@ bool GltfLoader::LoadFirstSkeleton(
     std::vector<int> nodeParents;
     BuildNodeParentTable(model, nodeParents);
 
-    // Maps glTF node index -> our joint index.
+    // Maps glTF node index -> engine joint index.
+    // Example: nodeToJoint[17] = 3 means glTF node 17 is engine joint 3.
     std::vector<int> nodeToJoint(model.nodes.size(), -1);
 
     for (std::size_t jointIndex = 0; jointIndex < skin.joints.size(); ++jointIndex)
     {
         const int nodeIndex = skin.joints[jointIndex];
 
-        if (nodeIndex < 0 ||
-            nodeIndex >= static_cast<int>(model.nodes.size()))
+        if (!IsValidIndex(nodeIndex, model.nodes.size()))
         {
-            std::cerr << "Invalid joint node index: " << nodeIndex << '\n';
+            std::cerr << "Invalid joint node index: "
+                      << nodeIndex << '\n';
             return false;
         }
 
@@ -592,27 +681,20 @@ bool GltfLoader::LoadFirstSkeleton(
     for (std::size_t jointIndex = 0; jointIndex < skin.joints.size(); ++jointIndex)
     {
         const int nodeIndex = skin.joints[jointIndex];
-        const tinygltf::Node &node = model.nodes[static_cast<std::size_t>(nodeIndex)];
+        const tinygltf::Node &node =
+            model.nodes[static_cast<std::size_t>(nodeIndex)];
 
         Joint joint{};
-
-        if (!node.name.empty())
-        {
-            joint.name = node.name;
-        }
-        else
-        {
-            joint.name = "Joint_" + std::to_string(jointIndex);
-        }
+        joint.name = node.name.empty()
+                         ? "Joint_" + std::to_string(jointIndex)
+                         : node.name;
 
         const int parentNodeIndex =
             nodeParents[static_cast<std::size_t>(nodeIndex)];
 
-        if (parentNodeIndex >= 0 &&
-            parentNodeIndex < static_cast<int>(nodeToJoint.size()))
+        if (IsValidIndex(parentNodeIndex, nodeToJoint.size()))
         {
-            joint.parent =
-                nodeToJoint[static_cast<std::size_t>(parentNodeIndex)];
+            joint.parent = nodeToJoint[static_cast<std::size_t>(parentNodeIndex)];
         }
         else
         {
@@ -635,6 +717,7 @@ bool GltfLoader::LoadFirstSkeleton(
 
     std::cout << "Loaded skeleton from " << path << '\n';
     std::cout << "Joint count: " << outSkeleton.joints.size() << '\n';
+    PrintSkeletonDebug(outSkeleton);
 
     return true;
 }

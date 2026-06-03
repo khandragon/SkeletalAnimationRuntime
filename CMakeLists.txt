@@ -8,13 +8,19 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_executable(SkeletalAnimationRuntime
     src/main.cpp
+
     src/math/Transform.h
+
     src/animation/Skeleton.h
     src/animation/Skeleton.cpp
+
     src/render/Shader.h
     src/render/Shader.cpp
     src/render/Mesh.h
     src/render/Mesh.cpp
+    src/render/DebugDraw.h
+    src/render/DebugDraw.cpp
+
     src/assets/GltfLoader.h
     src/assets/GltfLoader.cpp
 )
