@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "animation/Skeleton.h"
+#include "animation/AnimationClip.h"
 #include "render/Mesh.h"
 
 struct StaticMeshData
@@ -23,4 +24,8 @@ public:
     static bool LoadFirstSkeleton(
         const std::string &path,
         Skeleton &outSkeleton);
+
+    static bool LoadAnimationClips(
+        const std::string &path,
+        std::vector<AnimationClip> &outClips);
 };

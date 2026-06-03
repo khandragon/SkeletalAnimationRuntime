@@ -6,6 +6,7 @@
 #include <cstring>
 #include <iostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #define TINYGLTF_IMPLEMENTATION
@@ -571,6 +572,187 @@ namespace
                       << " parent=" << joint.parent << '\n';
         }
     }
+    bool GetChannelPathFromString(
+        const std::string &pathText,
+        ChannelPath &outPath)
+    {
+        if (pathText == "translation")
+        {
+            outPath = ChannelPath::Translation;
+            return true;
+        }
+
+        if (pathText == "rotation")
+        {
+            outPath = ChannelPath::Rotation;
+            return true;
+        }
+
+        if (pathText == "scale")
+        {
+            outPath = ChannelPath::Scale;
+            return true;
+        }
+
+        return false;
+    }
+
+    bool ReadFloatTimes(
+        const tinygltf::Model &model,
+        int accessorIndex,
+        std::vector<float> &outTimes)
+    {
+        outTimes.clear();
+
+        if (accessorIndex < 0 ||
+            accessorIndex >= static_cast<int>(model.accessors.size()))
+        {
+            std::cerr << "Invalid animation time accessor index.\n";
+            return false;
+        }
+
+        const tinygltf::Accessor &accessor =
+            model.accessors[static_cast<std::size_t>(accessorIndex)];
+
+        if (accessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT ||
+            accessor.type != TINYGLTF_TYPE_SCALAR)
+        {
+            std::cerr << "Unsupported animation time format. Expected FLOAT SCALAR.\n";
+            return false;
+        }
+
+        const unsigned char *data = GetAccessorData(model, accessor);
+        if (data == nullptr)
+        {
+            return false;
+        }
+
+        std::size_t stride = 0;
+        if (!GetAccessorStride(model, accessor, stride))
+        {
+            return false;
+        }
+
+        outTimes.resize(static_cast<std::size_t>(accessor.count));
+
+        for (std::size_t i = 0; i < accessor.count; ++i)
+        {
+            float value = 0.0f;
+            std::memcpy(&value, data + i * stride, sizeof(float));
+            outTimes[i] = value;
+        }
+
+        return true;
+    }
+
+    bool ReadAnimationValues(
+        const tinygltf::Model &model,
+        int accessorIndex,
+        ChannelPath path,
+        std::vector<glm::vec4> &outValues)
+    {
+        outValues.clear();
+
+        if (accessorIndex < 0 ||
+            accessorIndex >= static_cast<int>(model.accessors.size()))
+        {
+            std::cerr << "Invalid animation value accessor index.\n";
+            return false;
+        }
+
+        const tinygltf::Accessor &accessor =
+            model.accessors[static_cast<std::size_t>(accessorIndex)];
+
+        if (accessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT)
+        {
+            std::cerr << "Unsupported animation value component type. Expected FLOAT.\n";
+            return false;
+        }
+
+        const unsigned char *data = GetAccessorData(model, accessor);
+        if (data == nullptr)
+        {
+            return false;
+        }
+
+        std::size_t stride = 0;
+        if (!GetAccessorStride(model, accessor, stride))
+        {
+            return false;
+        }
+
+        outValues.resize(static_cast<std::size_t>(accessor.count));
+
+        if (path == ChannelPath::Translation || path == ChannelPath::Scale)
+        {
+            if (accessor.type != TINYGLTF_TYPE_VEC3)
+            {
+                std::cerr << "Unsupported translation/scale format. Expected FLOAT VEC3.\n";
+                return false;
+            }
+
+            for (std::size_t i = 0; i < accessor.count; ++i)
+            {
+                glm::vec3 value{};
+                std::memcpy(&value, data + i * stride, sizeof(glm::vec3));
+
+                outValues[i] = glm::vec4(value, 0.0f);
+            }
+
+            return true;
+        }
+
+        if (path == ChannelPath::Rotation)
+        {
+            if (accessor.type != TINYGLTF_TYPE_VEC4)
+            {
+                std::cerr << "Unsupported rotation format. Expected FLOAT VEC4.\n";
+                return false;
+            }
+
+            for (std::size_t i = 0; i < accessor.count; ++i)
+            {
+                glm::vec4 value{};
+                std::memcpy(&value, data + i * stride, sizeof(glm::vec4));
+
+                // glTF stores quaternion as x, y, z, w.
+                // We keep it in that order for now.
+                // In Milestone 7, when creating glm::quat, remember:
+                // glm::quat(w, x, y, z)
+                outValues[i] = value;
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    void BuildSkinNodeToJointMap(
+        const tinygltf::Model &model,
+        std::vector<int> &outNodeToJoint)
+    {
+        outNodeToJoint.assign(model.nodes.size(), -1);
+
+        if (model.skins.empty())
+        {
+            return;
+        }
+
+        const tinygltf::Skin &skin = model.skins[0];
+
+        for (std::size_t jointIndex = 0; jointIndex < skin.joints.size(); ++jointIndex)
+        {
+            const int nodeIndex = skin.joints[jointIndex];
+
+            if (nodeIndex >= 0 &&
+                nodeIndex < static_cast<int>(outNodeToJoint.size()))
+            {
+                outNodeToJoint[static_cast<std::size_t>(nodeIndex)] =
+                    static_cast<int>(jointIndex);
+            }
+        }
+    }
 }
 
 bool GltfLoader::LoadFirstStaticMesh(
@@ -718,6 +900,129 @@ bool GltfLoader::LoadFirstSkeleton(
     std::cout << "Loaded skeleton from " << path << '\n';
     std::cout << "Joint count: " << outSkeleton.joints.size() << '\n';
     PrintSkeletonDebug(outSkeleton);
+
+    return true;
+}
+
+bool GltfLoader::LoadAnimationClips(
+    const std::string &path,
+    std::vector<AnimationClip> &outClips)
+{
+    outClips.clear();
+
+    tinygltf::Model model;
+
+    if (!LoadGltfModelFromFile(path, model))
+    {
+        return false;
+    }
+
+    if (model.animations.empty())
+    {
+        std::cerr << "glTF file contains no animations: " << path << '\n';
+        return false;
+    }
+
+    std::vector<int> nodeToJoint;
+    BuildSkinNodeToJointMap(model, nodeToJoint);
+
+    for (std::size_t animationIndex = 0;
+         animationIndex < model.animations.size();
+         ++animationIndex)
+    {
+        const tinygltf::Animation &gltfAnimation =
+            model.animations[animationIndex];
+
+        AnimationClip clip{};
+
+        if (!gltfAnimation.name.empty())
+        {
+            clip.name = gltfAnimation.name;
+        }
+        else
+        {
+            clip.name = "Animation_" + std::to_string(animationIndex);
+        }
+
+        for (const tinygltf::AnimationChannel &gltfChannel :
+             gltfAnimation.channels)
+        {
+            if (gltfChannel.sampler < 0 ||
+                gltfChannel.sampler >= static_cast<int>(gltfAnimation.samplers.size()))
+            {
+                std::cerr << "Animation channel has invalid sampler index.\n";
+                continue;
+            }
+
+            ChannelPath pathType{};
+
+            if (!GetChannelPathFromString(gltfChannel.target_path, pathType))
+            {
+                // Ignore things like morph target weights for now.
+                continue;
+            }
+
+            const int targetNode = gltfChannel.target_node;
+
+            if (targetNode < 0 ||
+                targetNode >= static_cast<int>(nodeToJoint.size()))
+            {
+                continue;
+            }
+
+            const int jointIndex =
+                nodeToJoint[static_cast<std::size_t>(targetNode)];
+
+            if (jointIndex < 0)
+            {
+                // This animation channel targets a node that is not one of our skin joints.
+                continue;
+            }
+
+            const tinygltf::AnimationSampler &gltfSampler =
+                gltfAnimation.samplers[static_cast<std::size_t>(gltfChannel.sampler)];
+
+            AnimationChannel channel{};
+            channel.jointIndex = jointIndex;
+            channel.path = pathType;
+
+            if (!ReadFloatTimes(model, gltfSampler.input, channel.times))
+            {
+                continue;
+            }
+
+            if (!ReadAnimationValues(
+                    model,
+                    gltfSampler.output,
+                    pathType,
+                    channel.values))
+            {
+                continue;
+            }
+
+            if (channel.times.size() != channel.values.size())
+            {
+                std::cerr
+                    << "Animation channel time/value count mismatch in clip "
+                    << clip.name
+                    << '\n';
+
+                continue;
+            }
+
+            if (!channel.times.empty())
+            {
+                clip.duration = std::max(clip.duration, channel.times.back());
+            }
+
+            clip.channels.push_back(std::move(channel));
+        }
+
+        outClips.push_back(std::move(clip));
+    }
+
+    std::cout << "Loaded animation clips from " << path << '\n';
+    std::cout << "Clip count: " << outClips.size() << '\n';
 
     return true;
 }

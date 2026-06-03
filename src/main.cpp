@@ -14,6 +14,7 @@
 #include "assets/GltfLoader.h"
 #include "render/Mesh.h"
 #include "render/Shader.h"
+#include "animation/AnimationClip.h"
 
 static void GlfwErrorCallback(int error, const char *description)
 {
@@ -137,6 +138,17 @@ int main()
         std::cerr << "No skeleton loaded from model.\n";
     }
 
+    std::vector<AnimationClip> animationClips;
+
+    if (GltfLoader::LoadAnimationClips(modelPath, animationClips))
+    {
+        PrintAnimationClips(animationClips);
+    }
+    else
+    {
+        std::cerr << "No animation clips loaded from model.\n";
+    }
+
     std::vector<glm::mat4> bindPoseGlobalMatrices;
     ComputeBindPoseFromInverseBindMatrices(skeleton, bindPoseGlobalMatrices);
 
@@ -188,13 +200,14 @@ int main()
         ImGui::NewFrame();
 
         ImGui::Begin("Animation Runtime Debug");
-        ImGui::Text("Milestone 5");
+        ImGui::Text("Milestone 6");
         ImGui::Separator();
-        ImGui::Text("Goal: Draw bind-pose debug skeleton");
+        ImGui::Text("Goal: Load animation clips");
         ImGui::Text("Model: %s", modelPath.c_str());
         ImGui::Text("Vertices: %zu", meshData.vertices.size());
         ImGui::Text("Indices: %zu", meshData.indices.size());
         ImGui::Text("Joints: %zu", skeleton.joints.size());
+        ImGui::Text("Animation clips: %zu", animationClips.size());
         ImGui::Checkbox("Show skeleton", &showSkeleton);
         ImGui::Text("FPS: %.1f", io.Framerate);
         ImGui::Text("Frame time: %.3f ms", 1000.0f / io.Framerate);
