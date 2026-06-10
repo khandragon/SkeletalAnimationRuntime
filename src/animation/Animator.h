@@ -31,7 +31,13 @@ public:
 
     void Update(float deltaTime);
 
+    void EvaluateBlendTree1D(
+        const std::vector<BlendTree1DMotion> &motions,
+        float parameterValue,
+        float deltaTime);
+
     const Pose &GetPose() const { return m_pose; }
+
     Pose &GetMutablePose() { return m_pose; }
 
     void RecomputeGlobalPose();
@@ -92,6 +98,11 @@ private:
     void ResetPoseToBindPose(Pose &pose);
     void ComputeGlobalPose(Pose &pose);
     float NormalizeClipTime(float time, float duration) const;
+
+    static float InverseLerp(
+        float a,
+        float b,
+        float value);
 
     float AdvanceClipTime(
         float time,

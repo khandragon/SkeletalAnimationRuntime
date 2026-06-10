@@ -199,6 +199,22 @@ float Animator::AdvanceClipTime(
     return newTime;
 }
 
+float Animator::InverseLerp(
+    float a,
+    float b,
+    float value)
+{
+    if (std::abs(b - a) <= 0.00001f)
+    {
+        return 0.0f;
+    }
+
+    return std::clamp(
+        (value - a) / (b - a),
+        0.0f,
+        1.0f);
+}
+
 void Animator::Update(float deltaTime)
 {
     if (m_skeleton == nullptr || m_clips == nullptr || m_clips->empty())
@@ -315,6 +331,151 @@ void Animator::Update(float deltaTime)
         m_previousClipIndex = m_currentClipIndex;
         m_previousTime = m_time;
         m_previousKeyframeCache = m_currentKeyframeCache;
+    }
+}
+
+void Animator::EvaluateBlendTree1D(
+    const std::vector<BlendTree1DMotion> &motions,
+    float parameterValue,
+    float deltaTime)
+{
+    if (m_skeleton == nullptr ||
+        m_clips == nullptr ||
+        m_clips->empty() ||
+        motions.empty())
+    {
+        return;
+    }
+
+    const BlendTree1DMotion *lowerMotion = &motions.front();
+    const BlendTree1DMotion *upperMotion = &motions.front();
+
+    if (parameterValue <= motions.front().position)
+    {
+        lowerMotion = &motions.front();
+        upperMotion = &motions.front();
+    }
+    else if (parameterValue >= motions.back().position)
+    {
+        lowerMotion = &motions.back();
+        upperMotion = &motions.back();
+    }
+    else
+    {
+        for (std::size_t i = 0; i + 1 < motions.size(); ++i)
+        {
+            const BlendTree1DMotion &a = motions[i];
+            const BlendTree1DMotion &b = motions[i + 1];
+
+            if (parameterValue >= a.position &&
+                parameterValue <= b.position)
+            {
+                lowerMotion = &a;
+                upperMotion = &b;
+                break;
+            }
+        }
+    }
+
+    if (lowerMotion->clipIndex >= m_clips->size() ||
+        upperMotion->clipIndex >= m_clips->size())
+    {
+        return;
+    }
+
+    const AnimationClip &lowerClip =
+        (*m_clips)[lowerMotion->clipIndex];
+
+    const AnimationClip &upperClip =
+        (*m_clips)[upperMotion->clipIndex];
+
+    if (lowerClip.duration <= 0.0f ||
+        upperClip.duration <= 0.0f)
+    {
+        return;
+    }
+
+    m_time += deltaTime * m_playbackSpeed;
+
+    const float lowerTime =
+        NormalizeClipTime(m_time, lowerClip.duration);
+
+    const float upperTime =
+        NormalizeClipTime(m_time, upperClip.duration);
+
+    m_previousClipIndex = lowerMotion->clipIndex;
+    m_currentClipIndex = upperMotion->clipIndex;
+
+    PrepareKeyframeCache(m_previousKeyframeCache, lowerClip);
+    PrepareKeyframeCache(m_currentKeyframeCache, upperClip);
+
+    const bool sameMotion =
+        lowerMotion->clipIndex == upperMotion->clipIndex;
+
+    const float weight =
+        sameMotion
+            ? 0.0f
+            : InverseLerp(
+                  lowerMotion->position,
+                  upperMotion->position,
+                  parameterValue);
+
+    {
+        ScopedTimer timer(
+            "Animation sampling",
+            &m_timingStats.samplingMs);
+
+        if (sameMotion)
+        {
+            ResetPoseToBindPose(m_pose);
+
+            SampleClip(
+                lowerClip,
+                lowerTime,
+                m_pose,
+                m_previousKeyframeCache);
+
+            m_isBlending = false;
+            m_blendElapsed = 0.0f;
+            m_blendDuration = 0.0f;
+        }
+        else
+        {
+            ResetPoseToBindPose(m_fromPose);
+            ResetPoseToBindPose(m_toPose);
+
+            SampleClip(
+                lowerClip,
+                lowerTime,
+                m_fromPose,
+                m_previousKeyframeCache);
+
+            SampleClip(
+                upperClip,
+                upperTime,
+                m_toPose,
+                m_currentKeyframeCache);
+
+            BlendLocalPoses(
+                m_fromPose,
+                m_toPose,
+                weight,
+                m_pose);
+
+            // For debug UI only: this is blend-tree weight,
+            // not a transition timer.
+            m_isBlending = true;
+            m_blendElapsed = weight;
+            m_blendDuration = 1.0f;
+        }
+    }
+
+    {
+        ScopedTimer timer(
+            "Local-to-global pose",
+            &m_timingStats.localToGlobalMs);
+
+        ComputeGlobalPose(m_pose);
     }
 }
 

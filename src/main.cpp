@@ -486,8 +486,26 @@ namespace
 
     void UpdateCharacterAnimation(
         AnimatedCharacter &character,
+        const AnimationGraphState *currentState,
+        const AnimationGraph &graph,
         float deltaTime)
     {
+        if (currentState != nullptr &&
+            currentState->type == AnimationGraphStateType::BlendTree1D)
+        {
+            const float parameterValue =
+                GetAnimationGraphParameter(
+                    graph,
+                    currentState->parameter);
+
+            character.animator.EvaluateBlendTree1D(
+                currentState->motions,
+                parameterValue,
+                deltaTime);
+
+            return;
+        }
+
         character.animator.Update(deltaTime);
     }
 
@@ -701,6 +719,24 @@ int main()
 
     animationGraph.currentState = initialState->name;
 
+    std::size_t initialClipIndex =
+        initialState->clipIndex;
+
+    if (initialState->type == AnimationGraphStateType::BlendTree1D)
+    {
+        if (initialState->motions.empty())
+        {
+            std::cerr << "Initial blend tree state has no motions.\n";
+            meshShader.Destroy();
+            glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+
+        initialClipIndex =
+            initialState->motions.front().clipIndex;
+    }
+
     std::vector<AnimatedCharacter> characters;
     const int rootMotionJoint =
         FindRootMotionJointIndex(skeleton);
@@ -725,7 +761,7 @@ int main()
         characterAnimationMode,
         skeleton,
         animationClips,
-        initialState->clipIndex,
+        initialClipIndex,
         rootMotionJoint);
 
     Mesh mesh;
@@ -809,7 +845,7 @@ int main()
 
         if (key2IsDown && !key2WasDown)
         {
-            SetAnimationGraphParameter(animationGraph, "speed", 1.0f);
+            SetAnimationGraphParameter(animationGraph, "speed", 1.5f);
         }
 
         if (key3IsDown && !key3WasDown)
@@ -828,7 +864,15 @@ int main()
             debugAnimator = &characters[0].animator;
         }
 
-        if (debugAnimator != nullptr && !debugAnimator->IsBlending())
+        const AnimationGraphState *currentGraphState =
+            FindAnimationGraphState(
+                animationGraph,
+                animationGraph.currentState);
+
+        if (debugAnimator != nullptr &&
+            currentGraphState != nullptr &&
+            currentGraphState->type == AnimationGraphStateType::Clip &&
+            !debugAnimator->IsBlending())
         {
             const bool stateFinished = false;
 
@@ -842,18 +886,30 @@ int main()
 
                 if (targetState != nullptr)
                 {
-                    for (AnimatedCharacter &character : characters)
+                    if (targetState->type == AnimationGraphStateType::Clip)
                     {
-                        character.animator.CrossFadeTo(
-                            targetState->clipIndex,
-                            transition->blendTime);
+                        for (AnimatedCharacter &character : characters)
+                        {
+                            character.animator.CrossFadeTo(
+                                targetState->clipIndex,
+                                transition->blendTime);
+                        }
+                    }
+                    else if (targetState->type == AnimationGraphStateType::BlendTree1D &&
+                             !targetState->motions.empty())
+                    {
+                        for (AnimatedCharacter &character : characters)
+                        {
+                            character.animator.Play(
+                                targetState->motions.front().clipIndex,
+                                true);
+                        }
                     }
 
                     animationGraph.currentState = targetState->name;
                 }
             }
         }
-
         if (useMultithreadedAnimation)
         {
             {
@@ -866,10 +922,15 @@ int main()
                     AnimatedCharacter *characterPtr = &character;
 
                     jobSystem.Submit(
-                        [characterPtr, deltaTime]()
+                        [characterPtr,
+                         currentGraphState,
+                         &animationGraph,
+                         deltaTime]()
                         {
                             UpdateCharacterAnimation(
                                 *characterPtr,
+                                currentGraphState,
+                                animationGraph,
                                 deltaTime);
                         });
                 }
@@ -935,6 +996,8 @@ int main()
                 {
                     UpdateCharacterAnimation(
                         character,
+                        currentGraphState,
+                        animationGraph,
                         deltaTime);
                 }
             }
@@ -1021,7 +1084,32 @@ int main()
                     : nullptr;
 
             ImGui::Text("Current state: %s", animationGraph.currentState.c_str());
+            if (currentGraphState != nullptr &&
+                currentGraphState->type == AnimationGraphStateType::BlendTree1D)
+            {
+                const float parameterValue =
+                    GetAnimationGraphParameter(
+                        animationGraph,
+                        currentGraphState->parameter);
 
+                ImGui::Text("State type: Blend Tree 1D");
+                ImGui::Text(
+                    "Parameter: %s = %.3f",
+                    currentGraphState->parameter.c_str(),
+                    parameterValue);
+
+                for (const BlendTree1DMotion &motion : currentGraphState->motions)
+                {
+                    ImGui::Text(
+                        "Motion: %s at %.2f",
+                        motion.clipName.c_str(),
+                        motion.position);
+                }
+            }
+            else
+            {
+                ImGui::Text("State type: Clip");
+            }
             if (currentClip != nullptr && debugAnimator != nullptr)
             {
                 const float normalizedTime =
@@ -1063,13 +1151,20 @@ int main()
                 }
             }
 
-            ImGui::Text(
-                "Speed parameter: %.2f",
-                GetAnimationGraphParameter(animationGraph, "speed"));
+            float speed =
+                GetAnimationGraphParameter(animationGraph, "speed");
+
+            if (ImGui::SliderFloat("Speed", &speed, 0.0f, 4.0f))
+            {
+                SetAnimationGraphParameter(
+                    animationGraph,
+                    "speed",
+                    speed);
+            }
 
             ImGui::Text("Controls:");
             ImGui::Text("1 = speed 0.0");
-            ImGui::Text("2 = speed 1.0");
+            ImGui::Text("2 = speed 1.5");
             ImGui::Text("3 = speed 4.0");
         }
         if (ImGui::CollapsingHeader("Blending", ImGuiTreeNodeFlags_DefaultOpen))
@@ -1482,8 +1577,7 @@ int main()
                 characterAnimationMode,
                 skeleton,
                 animationClips,
-                initialState->clipIndex,
-                rootMotionJoint);
+                initialClipIndex, rootMotionJoint);
 
             for (AnimatedCharacter &character : characters)
             {

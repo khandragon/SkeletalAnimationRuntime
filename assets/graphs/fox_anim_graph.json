@@ -1,24 +1,30 @@
 {
   "character": "fox",
   "model": "assets/characters/Fox.glb",
-  "initial_state": "idle",
+  "initial_state": "locomotion",
 
   "parameters": {
     "speed": 0.0
   },
 
   "states": {
-    "idle": {
-      "clip": "Survey",
-      "loop": true
-    },
-    "walk": {
-      "clip": "Walk",
-      "loop": true
-    },
-    "run": {
-      "clip": "Run",
-      "loop": true
+    "locomotion": {
+      "type": "blend_tree_1d",
+      "parameter": "speed",
+      "motions": [
+        {
+          "clip": "Survey",
+          "position": 0.0
+        },
+        {
+          "clip": "Walk",
+          "position": 1.5
+        },
+        {
+          "clip": "Run",
+          "position": 4.0
+        }
+      ]
     }
   },
 
@@ -39,19 +45,19 @@
       "from": "walk",
       "to": "run",
       "condition": "speed > 3.0",
-      "blend_time": 0.20
+      "blend_time": 0.2
     },
     {
       "from": "run",
       "to": "idle",
       "condition": "speed < 0.1",
-      "blend_time": 0.30
+      "blend_time": 0.3
     },
     {
       "from": "run",
       "to": "walk",
       "condition": "speed < 3.0",
-      "blend_time": 0.20
+      "blend_time": 0.2
     }
   ]
 }

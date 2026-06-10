@@ -7,13 +7,28 @@
 
 #include "animation/AnimationClip.h"
 
+enum class AnimationGraphStateType
+{
+    Clip,
+    BlendTree1D
+};
+
 struct AnimationGraphState
 {
     std::string name;
+
+    AnimationGraphStateType type =
+        AnimationGraphStateType::Clip;
+
+    // Normal single-clip state.
     std::string clipName;
     bool loop = true;
+    std::size_t clipIndex =
+        static_cast<std::size_t>(-1);
 
-    std::size_t clipIndex = static_cast<std::size_t>(-1);
+    // Blend tree state.
+    std::string parameter;
+    std::vector<BlendTree1DMotion> motions;
 };
 
 struct AnimationGraphTransition

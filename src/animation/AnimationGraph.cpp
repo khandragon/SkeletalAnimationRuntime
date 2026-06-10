@@ -136,8 +136,43 @@ AnimationGraph LoadAnimationGraph(const std::string &path)
         {
             AnimationGraphState state{};
             state.name = stateName;
-            state.clipName = stateJson.value("clip", "");
-            state.loop = stateJson.value("loop", true);
+
+            const std::string stateType =
+                stateJson.value("type", "clip");
+
+            if (stateType == "blend_tree_1d")
+            {
+                state.type = AnimationGraphStateType::BlendTree1D;
+                state.parameter = stateJson.value("parameter", "");
+
+                if (stateJson.contains("motions") &&
+                    stateJson["motions"].is_array())
+                {
+                    for (const auto &motionJson : stateJson["motions"])
+                    {
+                        BlendTree1DMotion motion{};
+                        motion.clipName = motionJson.value("clip", "");
+                        motion.position = motionJson.value("position", 0.0f);
+
+                        state.motions.push_back(motion);
+                    }
+                }
+
+                std::sort(
+                    state.motions.begin(),
+                    state.motions.end(),
+                    [](const BlendTree1DMotion &a,
+                       const BlendTree1DMotion &b)
+                    {
+                        return a.position < b.position;
+                    });
+            }
+            else
+            {
+                state.type = AnimationGraphStateType::Clip;
+                state.clipName = stateJson.value("clip", "");
+                state.loop = stateJson.value("loop", true);
+            }
 
             graph.states[stateName] = state;
         }
@@ -175,28 +210,84 @@ bool ResolveAnimationGraphClipIndices(
 
     for (auto &[stateName, state] : graph.states)
     {
-        bool found = false;
-
-        for (std::size_t clipIndex = 0; clipIndex < clips.size(); ++clipIndex)
+        if (state.type == AnimationGraphStateType::Clip)
         {
-            if (clips[clipIndex].name == state.clipName)
+            bool found = false;
+
+            for (std::size_t clipIndex = 0;
+                 clipIndex < clips.size();
+                 ++clipIndex)
             {
-                state.clipIndex = clipIndex;
-                found = true;
-                break;
+                if (clips[clipIndex].name == state.clipName)
+                {
+                    state.clipIndex = clipIndex;
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found)
+            {
+                std::cerr
+                    << "Animation graph state \""
+                    << stateName
+                    << "\" references missing clip \""
+                    << state.clipName
+                    << "\"\n";
+
+                success = false;
             }
         }
-
-        if (!found)
+        else if (state.type == AnimationGraphStateType::BlendTree1D)
         {
-            std::cerr
-                << "Animation graph state \""
-                << stateName
-                << "\" references missing clip \""
-                << state.clipName
-                << "\"\n";
+            if (state.parameter.empty())
+            {
+                std::cerr
+                    << "Blend tree state \""
+                    << stateName
+                    << "\" has no parameter.\n";
 
-            success = false;
+                success = false;
+            }
+
+            if (state.motions.empty())
+            {
+                std::cerr
+                    << "Blend tree state \""
+                    << stateName
+                    << "\" has no motions.\n";
+
+                success = false;
+            }
+
+            for (BlendTree1DMotion &motion : state.motions)
+            {
+                bool found = false;
+
+                for (std::size_t clipIndex = 0;
+                     clipIndex < clips.size();
+                     ++clipIndex)
+                {
+                    if (clips[clipIndex].name == motion.clipName)
+                    {
+                        motion.clipIndex = clipIndex;
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (!found)
+                {
+                    std::cerr
+                        << "Blend tree state \""
+                        << stateName
+                        << "\" references missing clip \""
+                        << motion.clipName
+                        << "\"\n";
+
+                    success = false;
+                }
+            }
         }
     }
 

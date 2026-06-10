@@ -12,6 +12,15 @@ enum class ChannelPath
     Scale
 };
 
+struct BlendTree1DMotion
+{
+    std::string clipName;
+    float position = 0.0f;
+
+    std::size_t clipIndex =
+        static_cast<std::size_t>(-1);
+};
+
 struct AnimationChannel
 {
     int jointIndex = -1;
