@@ -35,7 +35,22 @@ namespace
         glm::vec3 center{0.0f};
         float scale = 1.0f;
     };
+    struct LoadingProfile
+    {
+        double graphLoadMs = 0.0;
+        double skinnedMeshLoadMs = 0.0;
+        double skeletonLoadMs = 0.0;
+        double animationClipLoadMs = 0.0;
+        double gltfTotalLoadMs = 0.0;
+    };
 
+    struct FrameProfile
+    {
+        double jointMatrixGenerationMs = 0.0;
+        double jointMatrixUploadMs = 0.0;
+        double renderMs = 0.0;
+        double fullFrameMs = 0.0;
+    };
     static void GlfwErrorCallback(int error, const char *description)
     {
         std::cerr << "GLFW Error " << error << ": " << description << '\n';
@@ -162,6 +177,9 @@ int main()
 
     int selectedJoint = 0;
 
+    LoadingProfile loadingProfile;
+    FrameProfile frameProfile;
+
     glfwSetErrorCallback(GlfwErrorCallback);
 
     if (!glfwInit())
@@ -218,7 +236,12 @@ int main()
 
     const std::string graphPath = "assets/graphs/fox_anim_graph.json";
 
-    AnimationGraph animationGraph = LoadAnimationGraph(graphPath);
+    AnimationGraph animationGraph;
+
+    {
+        ScopedTimer timer("Animation graph loading", &loadingProfile.graphLoadMs);
+        animationGraph = LoadAnimationGraph(graphPath);
+    }
 
     if (animationGraph.model.empty())
     {
@@ -232,6 +255,19 @@ int main()
     const std::string modelPath = animationGraph.model;
 
     SkinnedMeshData meshData;
+
+    {
+        ScopedTimer timer("Skinned mesh loading", &loadingProfile.skinnedMeshLoadMs);
+
+        if (!GltfLoader::LoadFirstSkinnedMesh(modelPath, meshData))
+        {
+            std::cerr << "Failed to load skinned model: " << modelPath << '\n';
+            meshShader.Destroy();
+            glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+    }
 
     if (!GltfLoader::LoadFirstSkinnedMesh(modelPath, meshData))
     {
@@ -247,6 +283,21 @@ int main()
 
     Skeleton skeleton;
 
+    {
+        ScopedTimer timer("Skeleton loading", &loadingProfile.skeletonLoadMs);
+
+        if (!GltfLoader::LoadFirstSkeleton(modelPath, skeleton))
+        {
+            std::cerr << "Failed to load skeleton from model.\n";
+            meshShader.Destroy();
+            glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+    }
+
+    PrintSkeletonHierarchy(skeleton);
+
     if (!GltfLoader::LoadFirstSkeleton(modelPath, skeleton))
     {
         std::cerr << "Failed to load skeleton from model.\n";
@@ -259,6 +310,21 @@ int main()
     PrintSkeletonHierarchy(skeleton);
 
     std::vector<AnimationClip> animationClips;
+
+    {
+        ScopedTimer timer("Animation clip loading", &loadingProfile.animationClipLoadMs);
+
+        if (!GltfLoader::LoadAnimationClips(modelPath, animationClips))
+        {
+            std::cerr << "Failed to load animation clips from model.\n";
+            meshShader.Destroy();
+            glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+    }
+
+    PrintAnimationClips(animationClips);
 
     if (!GltfLoader::LoadAnimationClips(modelPath, animationClips))
     {
@@ -279,6 +345,11 @@ int main()
         glfwTerminate();
         return 1;
     }
+
+    loadingProfile.gltfTotalLoadMs =
+        loadingProfile.skinnedMeshLoadMs +
+        loadingProfile.skeletonLoadMs +
+        loadingProfile.animationClipLoadMs;
 
     Animator animator;
     animator.Initialize(&skeleton, &animationClips);
@@ -366,6 +437,10 @@ int main()
     {
         glfwPollEvents();
 
+        ScopedTimer fullFrameTimer(
+            "Full frame",
+            &frameProfile.fullFrameMs);
+
         const double currentTime = glfwGetTime();
         const float deltaTime =
             static_cast<float>(currentTime - previousTime);
@@ -436,10 +511,16 @@ int main()
         CpuTimer skinningTimer;
         skinningTimer.Start();
 
-        UpdateJointMatrices(
-            skeleton,
-            animator.GetPose(),
-            jointMatrices);
+        {
+            ScopedTimer timer(
+                "Joint matrix generation",
+                &frameProfile.jointMatrixGenerationMs);
+
+            UpdateJointMatrices(
+                skeleton,
+                animator.GetPose(),
+                jointMatrices);
+        }
 
         skinningMs = skinningTimer.StopMilliseconds();
         if (showRootMotionPath &&
@@ -646,11 +727,72 @@ int main()
             const AnimationTimingStats &timing =
                 animator.GetTimingStats();
 
-            ImGui::Text("Animation sampling: %.4f ms", timing.samplingMs);
-            ImGui::Text("Local-to-global pose: %.4f ms", timing.localToGlobalMs);
-            ImGui::Text("Skinning matrix update: %.4f ms", skinningMs);
-            ImGui::Text("Render: %.4f ms", renderMs);
-            ImGui::Text("Total frame: %.4f ms", totalFrameMs);
+            if (ImGui::BeginTable(
+                    "PerformanceTable",
+                    2,
+                    ImGuiTableFlags_Borders |
+                        ImGuiTableFlags_RowBg |
+                        ImGuiTableFlags_SizingStretchProp))
+            {
+                ImGui::TableSetupColumn("Stage");
+                ImGui::TableSetupColumn("Time");
+                ImGui::TableHeadersRow();
+
+                auto AddRow = [](const char *stage, double ms)
+                {
+                    ImGui::TableNextRow();
+
+                    ImGui::TableSetColumnIndex(0);
+                    ImGui::Text("%s", stage);
+
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::Text("%.4f ms", ms);
+                };
+
+                AddRow("Animation sampling", timing.samplingMs);
+                AddRow("Local-to-global pose", timing.localToGlobalMs);
+                AddRow("Joint matrix generation", frameProfile.jointMatrixGenerationMs);
+                AddRow("Joint matrix upload", frameProfile.jointMatrixUploadMs);
+                AddRow("Rendering", frameProfile.renderMs);
+                AddRow("Full frame", frameProfile.fullFrameMs);
+
+                ImGui::EndTable();
+            }
+
+            ImGui::Separator();
+
+            if (ImGui::BeginTable(
+                    "LoadingTable",
+                    2,
+                    ImGuiTableFlags_Borders |
+                        ImGuiTableFlags_RowBg |
+                        ImGuiTableFlags_SizingStretchProp))
+            {
+                ImGui::TableSetupColumn("Loading stage");
+                ImGui::TableSetupColumn("Time");
+                ImGui::TableHeadersRow();
+
+                auto AddRow = [](const char *stage, double ms)
+                {
+                    ImGui::TableNextRow();
+
+                    ImGui::TableSetColumnIndex(0);
+                    ImGui::Text("%s", stage);
+
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::Text("%.4f ms", ms);
+                };
+
+                AddRow("Animation graph load", loadingProfile.graphLoadMs);
+                AddRow("Skinned mesh glTF load", loadingProfile.skinnedMeshLoadMs);
+                AddRow("Skeleton glTF load", loadingProfile.skeletonLoadMs);
+                AddRow("Animation clips glTF load", loadingProfile.animationClipLoadMs);
+                AddRow("Total glTF load", loadingProfile.gltfTotalLoadMs);
+
+                ImGui::EndTable();
+            }
+
+            ImGui::Separator();
             ImGui::Text("FPS: %.1f", io.Framerate);
         }
 
@@ -710,9 +852,18 @@ int main()
         {
             meshShader.Use();
             meshShader.SetMat4("uMVP", mvp);
-            meshShader.SetMat4Array("uJointMatrices[0]", jointMatrices);
+
+            {
+                ScopedTimer timer(
+                    "Joint matrix upload",
+                    &frameProfile.jointMatrixUploadMs);
+
+                meshShader.SetMat4Array("uJointMatrices[0]", jointMatrices);
+            }
+
             mesh.Draw();
         }
+
         const std::vector<glm::mat4> &poseToDraw =
             showBindPose
                 ? bindPoseGlobalMatrices

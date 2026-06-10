@@ -3,22 +3,10 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
-#include <chrono>
+
 #include <glm/gtc/quaternion.hpp>
 
-namespace
-{
-    using Clock = std::chrono::high_resolution_clock;
-
-    double MillisecondsSince(Clock::time_point start)
-    {
-        const auto end = Clock::now();
-
-        return std::chrono::duration<double, std::milli>(
-                   end - start)
-            .count();
-    }
-}
+#include "core/Timer.h"
 
 void Animator::Initialize(
     const Skeleton *skeleton,
@@ -138,18 +126,23 @@ void Animator::Update(float deltaTime)
 
     if (!m_isBlending)
     {
-        const auto samplingStart = Clock::now();
+        {
+            ScopedTimer timer(
+                "Animation sampling",
+                &m_timingStats.samplingMs);
 
-        ResetPoseToBindPose(m_pose);
-        SampleClip(currentClip, m_time, m_pose);
+            ResetPoseToBindPose(m_pose);
+            SampleClip(currentClip, m_time, m_pose);
+        }
 
-        m_timingStats.samplingMs = MillisecondsSince(samplingStart);
+        {
+            ScopedTimer timer(
+                "Local-to-global pose",
+                &m_timingStats.localToGlobalMs);
 
-        const auto globalStart = Clock::now();
+            ComputeGlobalPose(m_pose);
+        }
 
-        ComputeGlobalPose(m_pose);
-
-        m_timingStats.localToGlobalMs = MillisecondsSince(globalStart);
         return;
     }
 
@@ -180,23 +173,29 @@ void Animator::Update(float deltaTime)
 
     const float weight = GetBlendWeight();
 
-    const auto samplingStart = Clock::now();
+    {
+        ScopedTimer timer(
+            "Animation sampling",
+            &m_timingStats.samplingMs
+        );
 
-    ResetPoseToBindPose(m_fromPose);
-    ResetPoseToBindPose(m_toPose);
+        ResetPoseToBindPose(m_fromPose);
+        ResetPoseToBindPose(m_toPose);
 
-    SampleClip(previousClip, m_previousTime, m_fromPose);
-    SampleClip(currentClip, m_time, m_toPose);
+        SampleClip(previousClip, m_previousTime, m_fromPose);
+        SampleClip(currentClip, m_time, m_toPose);
 
-    BlendLocalPoses(m_fromPose, m_toPose, weight, m_pose);
+        BlendLocalPoses(m_fromPose, m_toPose, weight, m_pose);
+    }
 
-    m_timingStats.samplingMs = MillisecondsSince(samplingStart);
+    {
+        ScopedTimer timer(
+            "Local-to-global pose",
+            &m_timingStats.localToGlobalMs
+        );
 
-    const auto globalStart = Clock::now();
-
-    ComputeGlobalPose(m_pose);
-
-    m_timingStats.localToGlobalMs = MillisecondsSince(globalStart);
+        ComputeGlobalPose(m_pose);
+    }
 
     if (m_blendElapsed >= m_blendDuration)
     {
