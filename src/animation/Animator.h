@@ -32,6 +32,9 @@ public:
     void Update(float deltaTime);
 
     const Pose &GetPose() const { return m_pose; }
+    Pose &GetMutablePose() { return m_pose; }
+
+    void RecomputeGlobalPose();
 
     const AnimationClip *GetCurrentClip() const;
     const AnimationClip *GetPreviousClip() const;

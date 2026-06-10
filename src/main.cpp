@@ -5,7 +5,6 @@
 #include <random>
 #include <string>
 #include <vector>
-#include <thread>
 
 #include "core/JobSystem.h"
 #include "core/Timer.h"
@@ -70,6 +69,7 @@ namespace
     struct CrowdProfile
     {
         double animationUpdateMs = 0.0;
+        double rootMotionMs = 0.0;
         double jointMatrixGenerationMs = 0.0;
         double renderMs = 0.0;
         double fullFrameMs = 0.0;
@@ -227,6 +227,153 @@ namespace
             glm::vec3(x, 0.0f, z));
     }
 
+    glm::vec3 ComputeCharacterWorldPosition(
+        int index,
+        int characterCount)
+    {
+        const glm::mat4 worldTransform =
+            ComputeCharacterWorldTransform(index, characterCount);
+
+        return glm::vec3(worldTransform[3]);
+    }
+
+    int FindRootMotionJointIndex(const Skeleton &skeleton)
+    {
+        const char *preferredNames[] =
+            {
+                "b_Hip_01",
+                "Hips",
+                "hips",
+                "Root",
+                "root",
+                "Armature",
+                "_rootJoint",
+                "b_Root_00"};
+
+        for (const char *preferredName : preferredNames)
+        {
+            for (std::size_t i = 0; i < skeleton.joints.size(); ++i)
+            {
+                if (skeleton.joints[i].name == preferredName)
+                {
+                    return static_cast<int>(i);
+                }
+            }
+        }
+
+        return skeleton.joints.empty() ? -1 : 0;
+    }
+
+    void ApplyRootMotion(
+        AnimatedCharacter &character,
+        float displayScale,
+        bool enableRootMotion,
+        bool removeHorizontalMotionFromPose)
+    {
+        RootMotionState &rootMotion = character.rootMotion;
+
+        rootMotion.deltaThisFrame = glm::vec3(0.0f);
+
+        if (!enableRootMotion || rootMotion.jointIndex < 0)
+        {
+            rootMotion.hasPreviousRootPosition = false;
+            rootMotion.deltaThisFrame = glm::vec3(0.0f);
+            return;
+        }
+
+        Pose &pose = character.animator.GetMutablePose();
+
+        const std::size_t jointCount = pose.GetJointCount();
+
+        if (rootMotion.jointIndex >= static_cast<int>(jointCount) ||
+            rootMotion.jointIndex >= static_cast<int>(pose.global.size()))
+        {
+            return;
+        }
+
+        const std::size_t rootJointIndex =
+            static_cast<std::size_t>(rootMotion.jointIndex);
+
+        const glm::vec3 currentRootPosition =
+            glm::vec3(pose.global[rootJointIndex][3]);
+
+        if (!rootMotion.hasReferenceLocalTranslation)
+        {
+            const Transform rootLocal =
+                pose.GetLocal(rootJointIndex);
+
+            rootMotion.referenceLocalTranslation =
+                rootLocal.translation;
+
+            rootMotion.hasReferenceLocalTranslation = true;
+        }
+
+        if (!rootMotion.hasPreviousRootPosition)
+        {
+            rootMotion.previousRootPosition = currentRootPosition;
+            rootMotion.hasPreviousRootPosition = true;
+
+            rootMotion.path.clear();
+            rootMotion.path.push_back(character.worldPosition);
+
+            return;
+        }
+
+        glm::vec3 rawDelta =
+            currentRootPosition - rootMotion.previousRootPosition;
+
+        rootMotion.previousRootPosition = currentRootPosition;
+
+        glm::vec3 horizontalDelta =
+            glm::vec3(rawDelta.x, 0.0f, rawDelta.z);
+
+        // Protect against huge deltas when the animation loops.
+        if (glm::length(horizontalDelta) > 1.0f)
+        {
+            horizontalDelta = glm::vec3(0.0f);
+        }
+
+        const glm::vec3 worldDelta =
+            horizontalDelta * displayScale;
+
+        rootMotion.deltaThisFrame = worldDelta;
+        rootMotion.accumulatedMotion += worldDelta;
+
+        character.worldPosition += worldDelta;
+
+        character.worldTransform =
+            glm::translate(
+                glm::mat4(1.0f),
+                character.worldPosition);
+
+        if (rootMotion.path.empty() ||
+            glm::distance(rootMotion.path.back(), character.worldPosition) > 0.01f)
+        {
+            rootMotion.path.push_back(character.worldPosition);
+        }
+
+        if (rootMotion.path.size() > 512)
+        {
+            rootMotion.path.erase(rootMotion.path.begin());
+        }
+
+        if (removeHorizontalMotionFromPose)
+        {
+            Transform rootLocal =
+                pose.GetLocal(rootJointIndex);
+
+            rootLocal.translation.x =
+                rootMotion.referenceLocalTranslation.x;
+
+            rootLocal.translation.z =
+                rootMotion.referenceLocalTranslation.z;
+
+            pose.SetLocal(rootJointIndex, rootLocal);
+
+            character.animator.RecomputeGlobalPose();
+        }
+    }
+
     std::size_t EstimateCrowdMemoryBytes(
         std::size_t characterCount,
         std::size_t jointCount)
@@ -280,7 +427,8 @@ namespace
         CharacterAnimationMode mode,
         const Skeleton &skeleton,
         const std::vector<AnimationClip> &animationClips,
-        std::size_t defaultClipIndex)
+        std::size_t defaultClipIndex,
+        int rootMotionJoint)
     {
         characters.clear();
         characters.resize(static_cast<std::size_t>(characterCount));
@@ -301,13 +449,21 @@ namespace
                 characters[static_cast<std::size_t>(i)];
 
             character.animator.Initialize(&skeleton, &animationClips);
+
+            character.worldPosition =
+                ComputeCharacterWorldPosition(i, characterCount);
+
             character.worldTransform =
-                ComputeCharacterWorldTransform(i, characterCount);
+                glm::translate(
+                    glm::mat4(1.0f),
+                    character.worldPosition);
 
             character.jointMatrices.resize(
                 skeleton.joints.size(),
                 glm::mat4(1.0f));
-
+            character.rootMotion = RootMotionState{};
+            character.rootMotion.jointIndex = rootMotionJoint;
+            character.rootMotion.path.reserve(512);
             std::size_t clipIndex = defaultClipIndex;
 
             if (mode == CharacterAnimationMode::RandomClip && !animationClips.empty())
@@ -354,6 +510,9 @@ int main()
     bool showRootMotionPath = true;
     bool showForwardVector = true;
     bool showBindPose = false;
+
+    bool enableRootMotion = true;
+    bool removeHorizontalRootMotionFromPose = true;
 
     int selectedJoint = 0;
 
@@ -543,6 +702,22 @@ int main()
     animationGraph.currentState = initialState->name;
 
     std::vector<AnimatedCharacter> characters;
+    const int rootMotionJoint =
+        FindRootMotionJointIndex(skeleton);
+
+    if (rootMotionJoint >= 0)
+    {
+        std::cout
+            << "Root motion joint: "
+            << rootMotionJoint
+            << " "
+            << skeleton.joints[static_cast<std::size_t>(rootMotionJoint)].name
+            << '\n';
+    }
+    else
+    {
+        std::cout << "No root motion joint found.\n";
+    }
 
     RebuildCharacters(
         characters,
@@ -550,7 +725,8 @@ int main()
         characterAnimationMode,
         skeleton,
         animationClips,
-        initialState->clipIndex);
+        initialState->clipIndex,
+        rootMotionJoint);
 
     Mesh mesh;
 
@@ -565,20 +741,6 @@ int main()
 
     std::vector<glm::mat4> bindPoseGlobalMatrices;
     ComputeBindPoseFromInverseBindMatrices(skeleton, bindPoseGlobalMatrices);
-
-    std::vector<glm::vec3> rootMotionPath;
-    rootMotionPath.reserve(512);
-
-    int rootMotionJoint = 0;
-
-    for (std::size_t i = 0; i < skeleton.joints.size(); ++i)
-    {
-        if (skeleton.joints[i].name == "b_Hip_01")
-        {
-            rootMotionJoint = static_cast<int>(i);
-            break;
-        }
-    }
 
     DebugDraw debugDraw;
 
@@ -691,6 +853,7 @@ int main()
                 }
             }
         }
+
         if (useMultithreadedAnimation)
         {
             {
@@ -708,6 +871,32 @@ int main()
                             UpdateCharacterAnimation(
                                 *characterPtr,
                                 deltaTime);
+                        });
+                }
+
+                jobSystem.Wait();
+            }
+
+            {
+                ScopedTimer timer(
+                    "Root motion",
+                    &crowdProfile.rootMotionMs);
+
+                for (AnimatedCharacter &character : characters)
+                {
+                    AnimatedCharacter *characterPtr = &character;
+
+                    jobSystem.Submit(
+                        [characterPtr,
+                         displayScale = meshDisplay.scale,
+                         enableRootMotion,
+                         removeHorizontalRootMotionFromPose]()
+                        {
+                            ApplyRootMotion(
+                                *characterPtr,
+                                displayScale,
+                                enableRootMotion,
+                                removeHorizontalRootMotionFromPose);
                         });
                 }
 
@@ -747,6 +936,21 @@ int main()
                     UpdateCharacterAnimation(
                         character,
                         deltaTime);
+                }
+            }
+
+            {
+                ScopedTimer timer(
+                    "Root motion",
+                    &crowdProfile.rootMotionMs);
+
+                for (AnimatedCharacter &character : characters)
+                {
+                    ApplyRootMotion(
+                        character,
+                        meshDisplay.scale,
+                        enableRootMotion,
+                        removeHorizontalRootMotionFromPose);
                 }
             }
 
@@ -796,26 +1000,6 @@ int main()
             crowdProfile.averageFrameMs =
                 crowdProfile.averageFrameMs * (1.0 - smoothing) +
                 crowdProfile.fullFrameMs * smoothing;
-        }
-
-        if (debugAnimator != nullptr &&
-            showRootMotionPath &&
-            rootMotionJoint >= 0 &&
-            rootMotionJoint < static_cast<int>(debugAnimator->GetPose().global.size()))
-        {
-            const glm::vec3 rootPosition =
-                glm::vec3(debugAnimator->GetPose().global[rootMotionJoint][3]);
-
-            if (rootMotionPath.empty() ||
-                glm::distance(rootMotionPath.back(), rootPosition) > 0.01f)
-            {
-                rootMotionPath.push_back(rootPosition);
-            }
-
-            if (rootMotionPath.size() > 512)
-            {
-                rootMotionPath.erase(rootMotionPath.begin());
-            }
         }
 
         bool rebuildCharacters = false;
@@ -1009,10 +1193,71 @@ int main()
 
             if (ImGui::Button("Clear root path"))
             {
-                rootMotionPath.clear();
+                for (AnimatedCharacter &character : characters)
+                {
+                    character.rootMotion.path.clear();
+                    character.rootMotion.accumulatedMotion = glm::vec3(0.0f);
+                    character.rootMotion.deltaThisFrame = glm::vec3(0.0f);
+                    character.rootMotion.hasPreviousRootPosition = false;
+                }
             }
         }
+        if (ImGui::CollapsingHeader("Root Motion", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            ImGui::Checkbox("Enable root motion", &enableRootMotion);
 
+            ImGui::Checkbox(
+                "Remove horizontal motion from pose",
+                &removeHorizontalRootMotionFromPose);
+
+            if (rootMotionJoint >= 0)
+            {
+                const Joint &rootJoint =
+                    skeleton.joints[static_cast<std::size_t>(rootMotionJoint)];
+
+                ImGui::Text(
+                    "Root joint: %d %s",
+                    rootMotionJoint,
+                    rootJoint.name.c_str());
+            }
+            else
+            {
+                ImGui::Text("Root joint: none");
+            }
+
+            if (!characters.empty())
+            {
+                const RootMotionState &rootMotion =
+                    characters[0].rootMotion;
+
+                ImGui::Text(
+                    "Delta this frame: %.4f, %.4f, %.4f",
+                    rootMotion.deltaThisFrame.x,
+                    rootMotion.deltaThisFrame.y,
+                    rootMotion.deltaThisFrame.z);
+
+                ImGui::Text(
+                    "Accumulated: %.4f, %.4f, %.4f",
+                    rootMotion.accumulatedMotion.x,
+                    rootMotion.accumulatedMotion.y,
+                    rootMotion.accumulatedMotion.z);
+
+                ImGui::Text(
+                    "Path points: %zu",
+                    rootMotion.path.size());
+
+                if (ImGui::Button("Reset root motion"))
+                {
+                    for (AnimatedCharacter &character : characters)
+                    {
+                        character.rootMotion.hasPreviousRootPosition = false;
+                        character.rootMotion.accumulatedMotion = glm::vec3(0.0f);
+                        character.rootMotion.deltaThisFrame = glm::vec3(0.0f);
+                        character.rootMotion.path.clear();
+                    }
+                }
+            }
+        }
         if (ImGui::CollapsingHeader("Performance", ImGuiTreeNodeFlags_DefaultOpen))
         {
             AnimationTimingStats timing{};
@@ -1051,6 +1296,8 @@ int main()
                         ? "MT animation update"
                         : "ST animation update",
                     crowdProfile.animationUpdateMs);
+
+                AddRow("Root motion", crowdProfile.rootMotionMs);
 
                 AddRow(
                     useMultithreadedAnimation
@@ -1235,9 +1482,15 @@ int main()
                 characterAnimationMode,
                 skeleton,
                 animationClips,
-                initialState->clipIndex);
+                initialState->clipIndex,
+                rootMotionJoint);
 
-            rootMotionPath.clear();
+            for (AnimatedCharacter &character : characters)
+            {
+                GenerateCharacterJointMatrices(
+                    character,
+                    skeleton);
+            }
         }
 
         int framebufferWidth = 0;
@@ -1254,11 +1507,6 @@ int main()
                 : 1.0f;
 
         glm::mat4 model = glm::mat4(1.0f);
-
-        model = glm::rotate(
-            model,
-            static_cast<float>(glfwGetTime()) * 0.5f,
-            glm::vec3(0.0f, 1.0f, 0.0f));
 
         model = glm::scale(
             model,
@@ -1358,7 +1606,7 @@ int main()
                     }
                 }
 
-                if (showJointMarkers || showRootMotionPath || showForwardVector)
+                if (showJointMarkers || showForwardVector)
                 {
                     const AnimatedCharacter &debugCharacter = characters[0];
 
@@ -1383,13 +1631,6 @@ int main()
                             0.025f);
                     }
 
-                    if (showRootMotionPath)
-                    {
-                        debugDraw.AddPath(
-                            rootMotionPath,
-                            glm::vec3(0.0f, 1.0f, 1.0f));
-                    }
-
                     if (showForwardVector && !poseToDraw.empty())
                     {
                         const glm::vec3 origin =
@@ -1403,6 +1644,19 @@ int main()
                     }
 
                     debugDraw.Draw(debugMvp);
+                }
+
+                if (showRootMotionPath)
+                {
+                    const AnimatedCharacter &debugCharacter = characters[0];
+
+                    debugDraw.Begin();
+
+                    debugDraw.AddPath(
+                        debugCharacter.rootMotion.path,
+                        glm::vec3(0.0f, 1.0f, 1.0f));
+
+                    debugDraw.Draw(projection * view);
                 }
             }
 

@@ -348,6 +348,11 @@ const AnimationClip *Animator::GetPreviousClip() const
     return &(*m_clips)[m_previousClipIndex];
 }
 
+void Animator::RecomputeGlobalPose()
+{
+    ComputeGlobalPose(m_pose);
+}
+
 float Animator::GetBlendWeight() const
 {
     if (!m_isBlending || m_blendDuration <= 0.0f)
