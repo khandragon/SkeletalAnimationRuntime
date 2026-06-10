@@ -54,8 +54,15 @@ target_link_libraries(SkeletalAnimationRuntime PRIVATE
     nlohmann_json::nlohmann_json
 )
 
+add_custom_command(TARGET SkeletalAnimationRuntime POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/assets
+        $<TARGET_FILE_DIR:SkeletalAnimationRuntime>/assets
+)
+
 if (MSVC)
     target_compile_options(SkeletalAnimationRuntime PRIVATE /W4 /permissive-)
 else()
     target_compile_options(SkeletalAnimationRuntime PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+
