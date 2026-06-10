@@ -7,6 +7,9 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "core/Timer.h"
+#include "math/SimdTransform.h"
+
+#define USE_SIMD_TRANSFORM_BLEND 1
 
 void Animator::Initialize(
     const Skeleton *skeleton,
@@ -263,7 +266,6 @@ void Animator::Update(float deltaTime)
     }
 
     // Advance source/previous animation time too.
-    // Advance source/previous animation time too.
     m_previousTime = AdvanceClipTime(
         m_previousTime,
         deltaTime,
@@ -375,7 +377,9 @@ void Animator::ResetPoseToBindPose(Pose &pose)
 
     for (std::size_t i = 0; i < jointCount; ++i)
     {
-        pose.local[i] = m_skeleton->joints[i].bindLocalTransform;
+        pose.SetLocal(
+            i,
+            m_skeleton->joints[i].bindLocalTransform);
     }
 }
 
@@ -390,8 +394,11 @@ void Animator::ComputeGlobalPose(Pose &pose)
     {
         const Joint &joint = m_skeleton->joints[jointIndex];
 
+        const Transform localTransform =
+            pose.GetLocal(jointIndex);
+
         const glm::mat4 localMatrix =
-            TransformToMat4(pose.local[jointIndex]);
+            TransformToMat4(localTransform);
 
         if (joint.parent < 0)
         {
@@ -426,14 +433,17 @@ void Animator::SampleClip(
     {
         const AnimationChannel &channel = clip.channels[channelIndex];
 
+        const std::size_t jointCount =
+            pose.GetJointCount();
+
         if (channel.jointIndex < 0 ||
-            channel.jointIndex >= static_cast<int>(pose.local.size()))
+            static_cast<std::size_t>(channel.jointIndex) >= jointCount)
         {
             continue;
         }
 
-        Transform &jointTransform =
-            pose.local[static_cast<std::size_t>(channel.jointIndex)];
+        const std::size_t jointIndex =
+            static_cast<std::size_t>(channel.jointIndex);
 
         std::size_t &cachedKeyIndex =
             keyframeCache[channelIndex];
@@ -441,29 +451,29 @@ void Animator::SampleClip(
         switch (channel.path)
         {
         case ChannelPath::Translation:
-            jointTransform.translation =
+            pose.translations[jointIndex] =
                 SampleVec3Channel(
                     channel,
                     time,
-                    jointTransform.translation,
+                    pose.translations[jointIndex],
                     cachedKeyIndex);
             break;
 
         case ChannelPath::Rotation:
-            jointTransform.rotation =
+            pose.rotations[jointIndex] =
                 SampleRotationChannel(
                     channel,
                     time,
-                    jointTransform.rotation,
+                    pose.rotations[jointIndex],
                     cachedKeyIndex);
             break;
 
         case ChannelPath::Scale:
-            jointTransform.scale =
+            pose.scales[jointIndex] =
                 SampleVec3Channel(
                     channel,
                     time,
-                    jointTransform.scale,
+                    pose.scales[jointIndex],
                     cachedKeyIndex);
             break;
         }
@@ -495,19 +505,44 @@ void Animator::BlendLocalPoses(
 
     for (std::size_t jointIndex = 0; jointIndex < jointCount; ++jointIndex)
     {
-        const Transform &a = fromPose.local[jointIndex];
-        const Transform &b = toPose.local[jointIndex];
+#if USE_SIMD_TRANSFORM_BLEND
+        outPose.translations[jointIndex] =
+            LerpVec3Simd(
+                fromPose.translations[jointIndex],
+                toPose.translations[jointIndex],
+                weight);
 
-        Transform &blended = outPose.local[jointIndex];
+        outPose.rotations[jointIndex] =
+            NlerpQuatSimd(
+                fromPose.rotations[jointIndex],
+                toPose.rotations[jointIndex],
+                weight);
 
-        blended.translation =
-            glm::mix(a.translation, b.translation, weight);
+        outPose.scales[jointIndex] =
+            LerpVec3Simd(
+                fromPose.scales[jointIndex],
+                toPose.scales[jointIndex],
+                weight);
+#else
+        outPose.translations[jointIndex] =
+            glm::mix(
+                fromPose.translations[jointIndex],
+                toPose.translations[jointIndex],
+                weight);
 
-        blended.rotation =
-            glm::normalize(glm::slerp(a.rotation, b.rotation, weight));
+        outPose.rotations[jointIndex] =
+            glm::normalize(
+                glm::slerp(
+                    fromPose.rotations[jointIndex],
+                    toPose.rotations[jointIndex],
+                    weight));
 
-        blended.scale =
-            glm::mix(a.scale, b.scale, weight);
+        outPose.scales[jointIndex] =
+            glm::mix(
+                fromPose.scales[jointIndex],
+                toPose.scales[jointIndex],
+                weight);
+#endif
     }
 }
 

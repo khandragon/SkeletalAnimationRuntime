@@ -15,6 +15,7 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
@@ -239,17 +240,25 @@ namespace
         // m_pose, m_fromPose, m_toPose
         //
         // Each Pose has:
-        // local transforms + global matrices
+        // translations + rotations + scales + global matrices
         //
         // This is an estimate, not exact allocator-level memory.
-        const std::size_t transformBytes =
-            sizeof(Transform);
+
+        const std::size_t vec3Bytes =
+            sizeof(glm::vec3);
+
+        const std::size_t quatBytes =
+            sizeof(glm::quat);
 
         const std::size_t mat4Bytes =
             sizeof(glm::mat4);
 
         const std::size_t poseBytes =
-            jointCount * (transformBytes + mat4Bytes);
+            jointCount * (vec3Bytes + // translations
+                          quatBytes + // rotations
+                          vec3Bytes + // scales
+                          mat4Bytes   // global matrices
+                         );
 
         const std::size_t animatorPoseBytes =
             3 * poseBytes;
@@ -944,10 +953,10 @@ int main()
 
                 const Pose &pose = debugAnimator->GetPose();
 
-                if (selectedJoint < static_cast<int>(pose.local.size()))
+                if (selectedJoint < static_cast<int>(pose.GetJointCount()))
                 {
-                    const Transform &local =
-                        pose.local[static_cast<std::size_t>(selectedJoint)];
+                    const Transform local =
+                        pose.GetLocal(static_cast<std::size_t>(selectedJoint));
 
                     ImGui::Separator();
                     ImGui::Text("Local transform");
