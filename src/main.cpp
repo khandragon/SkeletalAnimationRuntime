@@ -5,7 +5,9 @@
 #include <random>
 #include <string>
 #include <vector>
+#include <thread>
 
+#include "core/JobSystem.h"
 #include "core/Timer.h"
 
 #include <glad/glad.h>
@@ -309,6 +311,23 @@ namespace
             }
         }
     }
+
+    void UpdateCharacterAnimation(
+        AnimatedCharacter &character,
+        float deltaTime)
+    {
+        character.animator.Update(deltaTime);
+    }
+
+    void GenerateCharacterJointMatrices(
+        AnimatedCharacter &character,
+        const Skeleton &skeleton)
+    {
+        UpdateJointMatrices(
+            skeleton,
+            character.animator.GetPose(),
+            character.jointMatrices);
+    }
 }
 
 int main()
@@ -324,6 +343,8 @@ int main()
 
     int characterCount = 1;
     int requestedCharacterCount = 1;
+
+    bool useMultithreadedAnimation = true;
 
     LoadingProfile loadingProfile;
     FrameProfile frameProfile;
@@ -550,6 +571,9 @@ int main()
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 450");
 
+    JobSystem jobSystem;
+    jobSystem.Start();
+
     bool key1WasDown = false;
     bool key2WasDown = false;
     bool key3WasDown = false;
@@ -635,28 +659,76 @@ int main()
                 }
             }
         }
+        if (useMultithreadedAnimation)
         {
-            ScopedTimer timer(
-                "Crowd animation update",
-                &crowdProfile.animationUpdateMs);
-
-            for (AnimatedCharacter &character : characters)
             {
-                character.animator.Update(deltaTime);
+                ScopedTimer timer(
+                    "Multithreaded animation update",
+                    &crowdProfile.animationUpdateMs);
+
+                for (AnimatedCharacter &character : characters)
+                {
+                    AnimatedCharacter *characterPtr = &character;
+
+                    jobSystem.Submit(
+                        [characterPtr, deltaTime]()
+                        {
+                            UpdateCharacterAnimation(
+                                *characterPtr,
+                                deltaTime);
+                        });
+                }
+
+                jobSystem.Wait();
+            }
+
+            {
+                ScopedTimer timer(
+                    "Multithreaded joint matrix generation",
+                    &crowdProfile.jointMatrixGenerationMs);
+
+                for (AnimatedCharacter &character : characters)
+                {
+                    AnimatedCharacter *characterPtr = &character;
+
+                    jobSystem.Submit(
+                        [characterPtr, &skeleton]()
+                        {
+                            GenerateCharacterJointMatrices(
+                                *characterPtr,
+                                skeleton);
+                        });
+                }
+
+                jobSystem.Wait();
             }
         }
-
+        else
         {
-            ScopedTimer timer(
-                "Crowd joint matrix generation",
-                &crowdProfile.jointMatrixGenerationMs);
-
-            for (AnimatedCharacter &character : characters)
             {
-                UpdateJointMatrices(
-                    skeleton,
-                    character.animator.GetPose(),
-                    character.jointMatrices);
+                ScopedTimer timer(
+                    "Single-threaded animation update",
+                    &crowdProfile.animationUpdateMs);
+
+                for (AnimatedCharacter &character : characters)
+                {
+                    UpdateCharacterAnimation(
+                        character,
+                        deltaTime);
+                }
+            }
+
+            {
+                ScopedTimer timer(
+                    "Single-threaded joint matrix generation",
+                    &crowdProfile.jointMatrixGenerationMs);
+
+                for (AnimatedCharacter &character : characters)
+                {
+                    GenerateCharacterJointMatrices(
+                        character,
+                        skeleton);
+                }
             }
         }
 
@@ -942,8 +1014,17 @@ int main()
 
                 AddRow("Animation sampling", timing.samplingMs);
                 AddRow("Local-to-global pose", timing.localToGlobalMs);
-                AddRow("Crowd animation update", crowdProfile.animationUpdateMs);
-                AddRow("Crowd joint matrix generation", crowdProfile.jointMatrixGenerationMs);
+                AddRow(
+                    useMultithreadedAnimation
+                        ? "MT animation update"
+                        : "ST animation update",
+                    crowdProfile.animationUpdateMs);
+
+                AddRow(
+                    useMultithreadedAnimation
+                        ? "MT joint matrix generation"
+                        : "ST joint matrix generation",
+                    crowdProfile.jointMatrixGenerationMs);
                 AddRow("Joint matrix upload", frameProfile.jointMatrixUploadMs);
                 AddRow("Rendering", frameProfile.renderMs);
                 AddRow("Full frame", frameProfile.fullFrameMs);
@@ -1041,6 +1122,14 @@ int main()
             }
 
             ImGui::Text("Current characters: %zu", characters.size());
+
+            ImGui::Checkbox(
+                "Multithreaded animation update",
+                &useMultithreadedAnimation);
+
+            ImGui::Text(
+                "Worker threads: %u",
+                jobSystem.GetWorkerCount());
 
             ImGui::Separator();
 
