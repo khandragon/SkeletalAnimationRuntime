@@ -7,6 +7,12 @@
 #include "animation/Pose.h"
 #include "animation/Skeleton.h"
 
+struct AnimationTimingStats
+{
+    double samplingMs = 0.0;
+    double localToGlobalMs = 0.0;
+};
+
 class Animator
 {
 public:
@@ -36,6 +42,17 @@ public:
     float GetBlendDuration() const { return m_blendDuration; }
     float GetBlendElapsed() const { return m_blendElapsed; }
 
+    void SetPlaybackSpeed(float speed) { m_playbackSpeed = speed; }
+    float GetPlaybackSpeed() const { return m_playbackSpeed; }
+
+    void SetLooping(bool loop) { m_loop = loop; }
+    bool IsLooping() const { return m_loop; }
+
+    const AnimationTimingStats &GetTimingStats() const
+    {
+        return m_timingStats;
+    }
+
 private:
     const Skeleton *m_skeleton = nullptr;
     const std::vector<AnimationClip> *m_clips = nullptr;
@@ -55,6 +72,10 @@ private:
     bool m_isBlending = false;
     float m_blendElapsed = 0.0f;
     float m_blendDuration = 0.0f;
+    float m_playbackSpeed = 1.0f;
+    bool m_loop = true;
+
+    AnimationTimingStats m_timingStats;
 
 private:
     void ResetPoseToBindPose(Pose &pose);

@@ -2,6 +2,9 @@
 #include <limits>
 #include <string>
 #include <vector>
+#include <algorithm>
+
+#include "core/Timer.h"
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -150,7 +153,14 @@ namespace
 
 int main()
 {
+    bool showMesh = true;
     bool showSkeleton = true;
+    bool showJointMarkers = true;
+    bool showRootMotionPath = true;
+    bool showForwardVector = true;
+    bool showBindPose = false;
+
+    int selectedJoint = 0;
 
     glfwSetErrorCallback(GlfwErrorCallback);
 
@@ -303,6 +313,23 @@ int main()
         return 1;
     }
 
+    std::vector<glm::mat4> bindPoseGlobalMatrices;
+    ComputeBindPoseFromInverseBindMatrices(skeleton, bindPoseGlobalMatrices);
+
+    std::vector<glm::vec3> rootMotionPath;
+    rootMotionPath.reserve(512);
+
+    int rootMotionJoint = 0;
+
+    for (std::size_t i = 0; i < skeleton.joints.size(); ++i)
+    {
+        if (skeleton.joints[i].name == "b_Hip_01")
+        {
+            rootMotionJoint = static_cast<int>(i);
+            break;
+        }
+    }
+
     DebugDraw debugDraw;
 
     if (!debugDraw.Create())
@@ -331,6 +358,9 @@ int main()
     bool key3WasDown = false;
 
     double previousTime = glfwGetTime();
+    double totalFrameMs = 0.0;
+    double skinningMs = 0.0;
+    double renderMs = 0.0;
 
     while (!glfwWindowShouldClose(window))
     {
@@ -341,6 +371,9 @@ int main()
             static_cast<float>(currentTime - previousTime);
 
         previousTime = currentTime;
+        CpuTimer totalFrameTimer;
+
+        totalFrameTimer.Start();
 
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         {
@@ -400,81 +433,226 @@ int main()
 
         animator.Update(deltaTime);
 
+        CpuTimer skinningTimer;
+        skinningTimer.Start();
+
         UpdateJointMatrices(
             skeleton,
             animator.GetPose(),
             jointMatrices);
 
+        skinningMs = skinningTimer.StopMilliseconds();
+        if (showRootMotionPath &&
+            rootMotionJoint >= 0 &&
+            rootMotionJoint < static_cast<int>(animator.GetPose().global.size()))
+        {
+            const glm::vec3 rootPosition =
+                glm::vec3(animator.GetPose().global[rootMotionJoint][3]);
+
+            if (rootMotionPath.empty() ||
+                glm::distance(rootMotionPath.back(), rootPosition) > 0.01f)
+            {
+                rootMotionPath.push_back(rootPosition);
+            }
+
+            if (rootMotionPath.size() > 512)
+            {
+                rootMotionPath.erase(rootMotionPath.begin());
+            }
+        }
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
         ImGui::Begin("Animation Runtime Debug");
 
-        ImGui::Text("Milestone 11");
+        ImGui::Text("Debug Views");
         ImGui::Separator();
-        ImGui::Text("Goal: JSON animation graph");
-        ImGui::Text("Graph: %s", graphPath.c_str());
-        ImGui::Text("Model: %s", modelPath.c_str());
-        ImGui::Text("State: %s", animationGraph.currentState.c_str());
-        ImGui::Text(
-            "Speed: %.2f",
-            GetAnimationGraphParameter(animationGraph, "speed"));
 
-        ImGui::Separator();
-        ImGui::Text("Vertices: %zu", meshData.vertices.size());
-        ImGui::Text("Indices: %zu", meshData.indices.size());
-        ImGui::Text("Joints: %zu", skeleton.joints.size());
-        ImGui::Text("Animation clips: %zu", animationClips.size());
-
-        const AnimationClip *currentClip = animator.GetCurrentClip();
-
-        if (currentClip != nullptr)
+        if (ImGui::CollapsingHeader("Animation", ImGuiTreeNodeFlags_DefaultOpen))
         {
-            ImGui::Separator();
-            ImGui::Text("Current clip: %s", currentClip->name.c_str());
-            ImGui::Text(
-                "Animation time: %.3f / %.3f",
-                animator.GetCurrentTime(),
-                currentClip->duration);
-        }
+            const AnimationClip *currentClip = animator.GetCurrentClip();
 
-        if (animator.IsBlending())
-        {
-            const AnimationClip *previousClip =
-                animator.GetPreviousClip();
+            ImGui::Text("Current state: %s", animationGraph.currentState.c_str());
 
-            if (previousClip != nullptr)
+            if (currentClip != nullptr)
             {
-                ImGui::Text("Blending from: %s", previousClip->name.c_str());
+                const float normalizedTime =
+                    currentClip->duration > 0.0f
+                        ? animator.GetCurrentTime() / currentClip->duration
+                        : 0.0f;
+
+                ImGui::Text("Current clip: %s", currentClip->name.c_str());
+                ImGui::Text(
+                    "Animation time: %.3f / %.3f",
+                    animator.GetCurrentTime(),
+                    currentClip->duration);
+                ImGui::Text("Normalized time: %.3f", normalizedTime);
             }
 
-            ImGui::Text("Blend weight: %.2f", animator.GetBlendWeight());
+            float playbackSpeed = animator.GetPlaybackSpeed();
+
+            if (ImGui::SliderFloat("Playback speed", &playbackSpeed, 0.0f, 3.0f))
+            {
+                animator.SetPlaybackSpeed(playbackSpeed);
+            }
+
+            bool looping = animator.IsLooping();
+
+            if (ImGui::Checkbox("Loop", &looping))
+            {
+                animator.SetLooping(looping);
+            }
+
             ImGui::Text(
-                "Blend time: %.3f / %.3f",
-                animator.GetBlendElapsed(),
-                animator.GetBlendDuration());
+                "Speed parameter: %.2f",
+                GetAnimationGraphParameter(animationGraph, "speed"));
+
+            ImGui::Text("Controls:");
+            ImGui::Text("1 = speed 0.0");
+            ImGui::Text("2 = speed 1.0");
+            ImGui::Text("3 = speed 4.0");
         }
-        else
+
+        if (ImGui::CollapsingHeader("Blending", ImGuiTreeNodeFlags_DefaultOpen))
         {
-            ImGui::Text("Blending: no");
+            if (animator.IsBlending())
+            {
+                const AnimationClip *previousClip = animator.GetPreviousClip();
+                const AnimationClip *currentClip = animator.GetCurrentClip();
+
+                if (previousClip != nullptr)
+                {
+                    ImGui::Text("Source clip: %s", previousClip->name.c_str());
+                }
+
+                if (currentClip != nullptr)
+                {
+                    ImGui::Text("Target clip: %s", currentClip->name.c_str());
+                }
+
+                ImGui::Text("Blend weight: %.2f", animator.GetBlendWeight());
+                ImGui::Text(
+                    "Blend time: %.3f / %.3f",
+                    animator.GetBlendElapsed(),
+                    animator.GetBlendDuration());
+            }
+            else
+            {
+                ImGui::Text("Blending: no");
+            }
         }
 
-        ImGui::Separator();
-        ImGui::Text("Controls:");
-        ImGui::Text("1 = speed 0.0");
-        ImGui::Text("2 = speed 1.0");
-        ImGui::Text("3 = speed 4.0");
-        ImGui::Checkbox("Show skeleton", &showSkeleton);
+        if (ImGui::CollapsingHeader("Skeleton", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            ImGui::Text("Joint count: %zu", skeleton.joints.size());
 
-        const float frameTimeMs =
-            io.Framerate > 0.0f
-                ? 1000.0f / io.Framerate
-                : 0.0f;
+            if (!skeleton.joints.empty())
+            {
+                selectedJoint = std::clamp(
+                    selectedJoint,
+                    0,
+                    static_cast<int>(skeleton.joints.size()) - 1);
 
-        ImGui::Separator();
-        ImGui::Text("FPS: %.1f", io.Framerate);
-        ImGui::Text("Frame time: %.3f ms", frameTimeMs);
+                ImGui::SliderInt(
+                    "Selected joint",
+                    &selectedJoint,
+                    0,
+                    static_cast<int>(skeleton.joints.size()) - 1);
+
+                const Joint &joint =
+                    skeleton.joints[static_cast<std::size_t>(selectedJoint)];
+
+                ImGui::Text("Joint name: %s", joint.name.c_str());
+                ImGui::Text("Parent index: %d", joint.parent);
+
+                if (joint.parent >= 0)
+                {
+                    const Joint &parent =
+                        skeleton.joints[static_cast<std::size_t>(joint.parent)];
+
+                    ImGui::Text("Parent name: %s", parent.name.c_str());
+                }
+                else
+                {
+                    ImGui::Text("Parent name: none");
+                }
+
+                const Pose &pose = animator.GetPose();
+
+                if (selectedJoint < static_cast<int>(pose.local.size()))
+                {
+                    const Transform &local =
+                        pose.local[static_cast<std::size_t>(selectedJoint)];
+
+                    ImGui::Separator();
+                    ImGui::Text("Local transform");
+                    ImGui::Text(
+                        "Translation: %.3f, %.3f, %.3f",
+                        local.translation.x,
+                        local.translation.y,
+                        local.translation.z);
+                    ImGui::Text(
+                        "Rotation quat: %.3f, %.3f, %.3f, %.3f",
+                        local.rotation.w,
+                        local.rotation.x,
+                        local.rotation.y,
+                        local.rotation.z);
+                    ImGui::Text(
+                        "Scale: %.3f, %.3f, %.3f",
+                        local.scale.x,
+                        local.scale.y,
+                        local.scale.z);
+                }
+
+                if (selectedJoint < static_cast<int>(pose.global.size()))
+                {
+                    const glm::mat4 &global =
+                        pose.global[static_cast<std::size_t>(selectedJoint)];
+
+                    ImGui::Separator();
+                    ImGui::Text("Global matrix");
+
+                    for (int row = 0; row < 4; ++row)
+                    {
+                        ImGui::Text(
+                            "%.3f %.3f %.3f %.3f",
+                            global[0][row],
+                            global[1][row],
+                            global[2][row],
+                            global[3][row]);
+                    }
+                }
+            }
+        }
+
+        if (ImGui::CollapsingHeader("Debug Rendering", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            ImGui::Checkbox("Show mesh", &showMesh);
+            ImGui::Checkbox("Show skeleton", &showSkeleton);
+            ImGui::Checkbox("Show joint markers", &showJointMarkers);
+            ImGui::Checkbox("Show root motion path", &showRootMotionPath);
+            ImGui::Checkbox("Show forward vector", &showForwardVector);
+            ImGui::Checkbox("Show bind pose skeleton", &showBindPose);
+
+            if (ImGui::Button("Clear root path"))
+            {
+                rootMotionPath.clear();
+            }
+        }
+
+        if (ImGui::CollapsingHeader("Performance", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            const AnimationTimingStats &timing =
+                animator.GetTimingStats();
+
+            ImGui::Text("Animation sampling: %.4f ms", timing.samplingMs);
+            ImGui::Text("Local-to-global pose: %.4f ms", timing.localToGlobalMs);
+            ImGui::Text("Skinning matrix update: %.4f ms", skinningMs);
+            ImGui::Text("Render: %.4f ms", renderMs);
+            ImGui::Text("Total frame: %.4f ms", totalFrameMs);
+            ImGui::Text("FPS: %.1f", io.Framerate);
+        }
 
         ImGui::End();
 
@@ -525,24 +703,71 @@ int main()
         glClearColor(0.08f, 0.09f, 0.11f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        meshShader.Use();
-        meshShader.SetMat4("uMVP", mvp);
-        meshShader.SetMat4Array("uJointMatrices[0]", jointMatrices);
-        mesh.Draw();
+        CpuTimer renderTimer;
+        renderTimer.Start();
 
-        if (showSkeleton)
+        if (showMesh)
+        {
+            meshShader.Use();
+            meshShader.SetMat4("uMVP", mvp);
+            meshShader.SetMat4Array("uJointMatrices[0]", jointMatrices);
+            mesh.Draw();
+        }
+        const std::vector<glm::mat4> &poseToDraw =
+            showBindPose
+                ? bindPoseGlobalMatrices
+                : animator.GetPose().global;
+
+        if (showSkeleton ||
+            showJointMarkers ||
+            showRootMotionPath ||
+            showForwardVector)
         {
             debugDraw.Begin();
 
-            debugDraw.AddSkeleton(
-                skeleton,
-                animator.GetPose().global,
-                glm::vec3(1.0f, 1.0f, 0.0f));
+            if (showSkeleton)
+            {
+                debugDraw.AddSkeleton(
+                    skeleton,
+                    poseToDraw,
+                    glm::vec3(1.0f, 1.0f, 0.0f));
+            }
+
+            if (showJointMarkers)
+            {
+                debugDraw.AddJointMarkers(
+                    poseToDraw,
+                    selectedJoint,
+                    0.025f);
+            }
+
+            if (showRootMotionPath)
+            {
+                debugDraw.AddPath(
+                    rootMotionPath,
+                    glm::vec3(0.0f, 1.0f, 1.0f));
+            }
+
+            if (showForwardVector && !poseToDraw.empty())
+            {
+                const glm::vec3 origin =
+                    glm::vec3(poseToDraw[0][3]);
+
+                debugDraw.AddForwardVector(
+                    origin,
+                    glm::vec3(0.0f, 0.0f, 1.0f),
+                    0.5f,
+                    glm::vec3(1.0f, 0.0f, 1.0f));
+            }
 
             debugDraw.Draw(mvp);
         }
 
+        renderMs = renderTimer.StopMilliseconds();
+
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+        totalFrameMs = totalFrameTimer.StopMilliseconds();
 
         glfwSwapBuffers(window);
     }

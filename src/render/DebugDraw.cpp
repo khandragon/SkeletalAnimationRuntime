@@ -5,6 +5,71 @@
 
 #include <glad/glad.h>
 
+void DebugDraw::AddCross(
+    const glm::vec3 &position,
+    float size,
+    const glm::vec3 &color)
+{
+    AddLine(position + glm::vec3(-size, 0.0f, 0.0f),
+            position + glm::vec3(size, 0.0f, 0.0f),
+            color);
+
+    AddLine(position + glm::vec3(0.0f, -size, 0.0f),
+            position + glm::vec3(0.0f, size, 0.0f),
+            color);
+
+    AddLine(position + glm::vec3(0.0f, 0.0f, -size),
+            position + glm::vec3(0.0f, 0.0f, size),
+            color);
+}
+
+void DebugDraw::AddJointMarkers(
+    const std::vector<glm::mat4> &jointMatrices,
+    int selectedJoint,
+    float size)
+{
+    for (std::size_t i = 0; i < jointMatrices.size(); ++i)
+    {
+        const glm::vec3 position = glm::vec3(jointMatrices[i][3]);
+
+        glm::vec3 color = glm::vec3(1.0f);
+
+        if (static_cast<int>(i) == selectedJoint)
+        {
+            color = glm::vec3(1.0f, 0.2f, 0.2f);
+        }
+
+        AddCross(position, size, color);
+    }
+}
+
+void DebugDraw::AddPath(
+    const std::vector<glm::vec3> &points,
+    const glm::vec3 &color)
+{
+    if (points.size() < 2)
+    {
+        return;
+    }
+
+    for (std::size_t i = 0; i + 1 < points.size(); ++i)
+    {
+        AddLine(points[i], points[i + 1], color);
+    }
+}
+
+void DebugDraw::AddForwardVector(
+    const glm::vec3 &origin,
+    const glm::vec3 &forward,
+    float length,
+    const glm::vec3 &color)
+{
+    AddLine(
+        origin,
+        origin + glm::normalize(forward) * length,
+        color);
+}
+
 bool DebugDraw::Create()
 {
     const char *vertexShaderSource = R"(

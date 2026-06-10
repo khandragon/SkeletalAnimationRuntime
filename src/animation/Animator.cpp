@@ -3,8 +3,22 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
-
+#include <chrono>
 #include <glm/gtc/quaternion.hpp>
+
+namespace
+{
+    using Clock = std::chrono::high_resolution_clock;
+
+    double MillisecondsSince(Clock::time_point start)
+    {
+        const auto end = Clock::now();
+
+        return std::chrono::duration<double, std::milli>(
+                   end - start)
+            .count();
+    }
+}
 
 void Animator::Initialize(
     const Skeleton *skeleton,
@@ -114,7 +128,7 @@ void Animator::Update(float deltaTime)
     }
 
     // Advance destination/current animation time.
-    m_time += deltaTime;
+    m_time += deltaTime * m_playbackSpeed;
     m_time = std::fmod(m_time, currentClip.duration);
 
     if (m_time < 0.0f)
@@ -124,9 +138,18 @@ void Animator::Update(float deltaTime)
 
     if (!m_isBlending)
     {
+        const auto samplingStart = Clock::now();
+
         ResetPoseToBindPose(m_pose);
         SampleClip(currentClip, m_time, m_pose);
+
+        m_timingStats.samplingMs = MillisecondsSince(samplingStart);
+
+        const auto globalStart = Clock::now();
+
         ComputeGlobalPose(m_pose);
+
+        m_timingStats.localToGlobalMs = MillisecondsSince(globalStart);
         return;
     }
 
@@ -145,7 +168,7 @@ void Animator::Update(float deltaTime)
     }
 
     // Advance source/previous animation time too.
-    m_previousTime += deltaTime;
+    m_previousTime += deltaTime * m_playbackSpeed;
     m_previousTime = std::fmod(m_previousTime, previousClip.duration);
 
     if (m_previousTime < 0.0f)
@@ -157,6 +180,8 @@ void Animator::Update(float deltaTime)
 
     const float weight = GetBlendWeight();
 
+    const auto samplingStart = Clock::now();
+
     ResetPoseToBindPose(m_fromPose);
     ResetPoseToBindPose(m_toPose);
 
@@ -164,7 +189,14 @@ void Animator::Update(float deltaTime)
     SampleClip(currentClip, m_time, m_toPose);
 
     BlendLocalPoses(m_fromPose, m_toPose, weight, m_pose);
+
+    m_timingStats.samplingMs = MillisecondsSince(samplingStart);
+
+    const auto globalStart = Clock::now();
+
     ComputeGlobalPose(m_pose);
+
+    m_timingStats.localToGlobalMs = MillisecondsSince(globalStart);
 
     if (m_blendElapsed >= m_blendDuration)
     {

@@ -32,6 +32,29 @@ public:
         const glm::vec3 &color);
 
     void Draw(const glm::mat4 &viewProjection);
+    void AddCross(
+    const glm::vec3& position,
+    float size,
+    const glm::vec3& color
+    );
+
+    void AddJointMarkers(
+        const std::vector<glm::mat4>& jointMatrices,
+        int selectedJoint,
+        float size
+    );
+
+    void AddPath(
+        const std::vector<glm::vec3>& points,
+        const glm::vec3& color
+    );
+
+    void AddForwardVector(
+        const glm::vec3& origin,
+        const glm::vec3& forward,
+        float length,
+        const glm::vec3& color
+    );
 
 private:
     Shader m_shader;

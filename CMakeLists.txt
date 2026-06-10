@@ -11,6 +11,8 @@ add_executable(SkeletalAnimationRuntime
 
     src/math/Transform.h
 
+    src/core/Timer.h
+
     src/animation/Skeleton.h
     src/animation/Skeleton.cpp
     src/animation/AnimationClip.h
