@@ -37,6 +37,20 @@ public:
 
     float GetCurrentTime() const { return m_time; }
 
+    void SetCurrentTime(float time) { m_time = time; }
+
+    void SetNormalizedTime(float normalizedTime)
+    {
+        const AnimationClip* clip = GetCurrentClip();
+
+        if (clip == nullptr || clip->duration <= 0.0f)
+        {
+            return;
+        }
+
+        m_time = normalizedTime * clip->duration;
+    }
+    
     bool IsBlending() const { return m_isBlending; }
     float GetBlendWeight() const;
     float GetBlendDuration() const { return m_blendDuration; }

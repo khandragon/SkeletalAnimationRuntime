@@ -23,6 +23,7 @@ add_executable(SkeletalAnimationRuntime
     src/animation/Animator.cpp
     src/animation/AnimationGraph.h
     src/animation/AnimationGraph.cpp
+    src/animation/AnimatedCharacter.h
 
     src/render/Shader.h
     src/render/Shader.cpp

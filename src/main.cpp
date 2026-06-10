@@ -1,8 +1,10 @@
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <limits>
+#include <random>
 #include <string>
 #include <vector>
-#include <algorithm>
 
 #include "core/Timer.h"
 
@@ -18,6 +20,7 @@
 
 #include "assets/GltfLoader.h"
 
+#include "animation/AnimatedCharacter.h"
 #include "animation/AnimationClip.h"
 #include "animation/AnimationGraph.h"
 #include "animation/Animator.h"
@@ -43,7 +46,6 @@ namespace
         double animationClipLoadMs = 0.0;
         double gltfTotalLoadMs = 0.0;
     };
-
     struct FrameProfile
     {
         double jointMatrixGenerationMs = 0.0;
@@ -51,6 +53,30 @@ namespace
         double renderMs = 0.0;
         double fullFrameMs = 0.0;
     };
+    enum class CharacterAnimationMode
+    {
+        SameClip,
+        RandomClip,
+        RandomPhase
+    };
+    enum class SkinningMode
+    {
+        GPU,
+        CPU
+    };
+    struct CrowdProfile
+    {
+        double animationUpdateMs = 0.0;
+        double jointMatrixGenerationMs = 0.0;
+        double renderMs = 0.0;
+        double fullFrameMs = 0.0;
+
+        double averageFrameMs = 0.0;
+        double charactersUpdatedPerSecond = 0.0;
+
+        std::size_t estimatedMemoryBytes = 0;
+    };
+
     static void GlfwErrorCallback(int error, const char *description)
     {
         std::cerr << "GLFW Error " << error << ": " << description << '\n';
@@ -164,6 +190,125 @@ namespace
             }
         )";
     }
+
+    glm::mat4 ComputeCharacterWorldTransform(
+        int index,
+        int characterCount)
+    {
+        const int columns =
+            static_cast<int>(std::ceil(std::sqrt(static_cast<float>(characterCount))));
+
+        const int row = index / columns;
+        const int column = index % columns;
+
+        const float spacing = 2.5f;
+
+        const float centerOffset =
+            static_cast<float>(columns - 1) * spacing * 0.5f;
+
+        const float x =
+            static_cast<float>(column) * spacing - centerOffset;
+
+        const float z =
+            static_cast<float>(row) * spacing - centerOffset;
+
+        return glm::translate(
+            glm::mat4(1.0f),
+            glm::vec3(x, 0.0f, z));
+    }
+
+    std::size_t EstimateCrowdMemoryBytes(
+        std::size_t characterCount,
+        std::size_t jointCount)
+    {
+        // Rough estimate:
+        // Each character owns:
+        // - Animator pose data internally
+        // - jointMatrices vector externally
+        //
+        // Animator contains 3 poses:
+        // m_pose, m_fromPose, m_toPose
+        //
+        // Each Pose has:
+        // local transforms + global matrices
+        //
+        // This is an estimate, not exact allocator-level memory.
+        const std::size_t transformBytes =
+            sizeof(Transform);
+
+        const std::size_t mat4Bytes =
+            sizeof(glm::mat4);
+
+        const std::size_t poseBytes =
+            jointCount * (transformBytes + mat4Bytes);
+
+        const std::size_t animatorPoseBytes =
+            3 * poseBytes;
+
+        const std::size_t jointMatrixBytes =
+            jointCount * mat4Bytes;
+
+        const std::size_t perCharacterBytes =
+            sizeof(AnimatedCharacter) +
+            animatorPoseBytes +
+            jointMatrixBytes;
+
+        return characterCount * perCharacterBytes;
+    }
+
+    void RebuildCharacters(
+        std::vector<AnimatedCharacter> &characters,
+        int characterCount,
+        CharacterAnimationMode mode,
+        const Skeleton &skeleton,
+        const std::vector<AnimationClip> &animationClips,
+        std::size_t defaultClipIndex)
+    {
+        characters.clear();
+        characters.resize(static_cast<std::size_t>(characterCount));
+
+        std::mt19937 randomEngine(1337);
+        std::uniform_real_distribution<float> phaseDistribution(0.0f, 1.0f);
+
+        const int clipCount =
+            static_cast<int>(animationClips.size());
+
+        std::uniform_int_distribution<int> clipDistribution(
+            0,
+            glm::max(clipCount - 1, 0));
+
+        for (int i = 0; i < characterCount; ++i)
+        {
+            AnimatedCharacter &character =
+                characters[static_cast<std::size_t>(i)];
+
+            character.animator.Initialize(&skeleton, &animationClips);
+            character.worldTransform =
+                ComputeCharacterWorldTransform(i, characterCount);
+
+            character.jointMatrices.resize(
+                skeleton.joints.size(),
+                glm::mat4(1.0f));
+
+            std::size_t clipIndex = defaultClipIndex;
+
+            if (mode == CharacterAnimationMode::RandomClip && !animationClips.empty())
+            {
+                clipIndex = static_cast<std::size_t>(clipDistribution(randomEngine));
+            }
+
+            character.clipIndex = static_cast<int>(clipIndex);
+            character.animator.Play(clipIndex);
+
+            if (mode == CharacterAnimationMode::RandomPhase)
+            {
+                const float phase =
+                    phaseDistribution(randomEngine);
+
+                character.animator.SetNormalizedTime(phase);
+            }
+        }
+    }
 }
 
 int main()
@@ -177,9 +322,19 @@ int main()
 
     int selectedJoint = 0;
 
+    int characterCount = 1;
+    int requestedCharacterCount = 1;
+
     LoadingProfile loadingProfile;
     FrameProfile frameProfile;
 
+    CharacterAnimationMode characterAnimationMode =
+        CharacterAnimationMode::SameClip;
+
+    SkinningMode skinningMode =
+        SkinningMode::GPU;
+
+    CrowdProfile crowdProfile;
     glfwSetErrorCallback(GlfwErrorCallback);
 
     if (!glfwInit())
@@ -269,15 +424,6 @@ int main()
         }
     }
 
-    if (!GltfLoader::LoadFirstSkinnedMesh(modelPath, meshData))
-    {
-        std::cerr << "Failed to load skinned model: " << modelPath << '\n';
-        meshShader.Destroy();
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return 1;
-    }
-
     const MeshDisplaySettings meshDisplay =
         ComputeMeshDisplaySettings(meshData.vertices);
 
@@ -294,17 +440,6 @@ int main()
             glfwTerminate();
             return 1;
         }
-    }
-
-    PrintSkeletonHierarchy(skeleton);
-
-    if (!GltfLoader::LoadFirstSkeleton(modelPath, skeleton))
-    {
-        std::cerr << "Failed to load skeleton from model.\n";
-        meshShader.Destroy();
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return 1;
     }
 
     PrintSkeletonHierarchy(skeleton);
@@ -326,17 +461,6 @@ int main()
 
     PrintAnimationClips(animationClips);
 
-    if (!GltfLoader::LoadAnimationClips(modelPath, animationClips))
-    {
-        std::cerr << "Failed to load animation clips from model.\n";
-        meshShader.Destroy();
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return 1;
-    }
-
-    PrintAnimationClips(animationClips);
-
     if (!ResolveAnimationGraphClipIndices(animationGraph, animationClips))
     {
         std::cerr << "Failed to resolve animation graph clip names.\n";
@@ -351,9 +475,6 @@ int main()
         loadingProfile.skeletonLoadMs +
         loadingProfile.animationClipLoadMs;
 
-    Animator animator;
-    animator.Initialize(&skeleton, &animationClips);
-
     const AnimationGraphState *initialState =
         FindAnimationGraphState(animationGraph, animationGraph.initialState);
 
@@ -366,12 +487,17 @@ int main()
         return 1;
     }
 
-    animator.Play(initialState->clipIndex);
     animationGraph.currentState = initialState->name;
 
-    std::vector<glm::mat4> jointMatrices(
-        skeleton.joints.size(),
-        glm::mat4(1.0f));
+    std::vector<AnimatedCharacter> characters;
+
+    RebuildCharacters(
+        characters,
+        characterCount,
+        characterAnimationMode,
+        skeleton,
+        animationClips,
+        initialState->clipIndex);
 
     Mesh mesh;
 
@@ -429,9 +555,6 @@ int main()
     bool key3WasDown = false;
 
     double previousTime = glfwGetTime();
-    double totalFrameMs = 0.0;
-    double skinningMs = 0.0;
-    double renderMs = 0.0;
 
     while (!glfwWindowShouldClose(window))
     {
@@ -446,9 +569,6 @@ int main()
             static_cast<float>(currentTime - previousTime);
 
         previousTime = currentTime;
-        CpuTimer totalFrameTimer;
-
-        totalFrameTimer.Start();
 
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         {
@@ -483,7 +603,14 @@ int main()
         key2WasDown = key2IsDown;
         key3WasDown = key3IsDown;
 
-        if (!animator.IsBlending())
+        Animator *debugAnimator = nullptr;
+
+        if (!characters.empty())
+        {
+            debugAnimator = &characters[0].animator;
+        }
+
+        if (debugAnimator != nullptr && !debugAnimator->IsBlending())
         {
             const bool stateFinished = false;
 
@@ -497,38 +624,83 @@ int main()
 
                 if (targetState != nullptr)
                 {
-                    animator.CrossFadeTo(
-                        targetState->clipIndex,
-                        transition->blendTime);
+                    for (AnimatedCharacter &character : characters)
+                    {
+                        character.animator.CrossFadeTo(
+                            targetState->clipIndex,
+                            transition->blendTime);
+                    }
 
                     animationGraph.currentState = targetState->name;
                 }
             }
         }
+        {
+            ScopedTimer timer(
+                "Crowd animation update",
+                &crowdProfile.animationUpdateMs);
 
-        animator.Update(deltaTime);
-
-        CpuTimer skinningTimer;
-        skinningTimer.Start();
+            for (AnimatedCharacter &character : characters)
+            {
+                character.animator.Update(deltaTime);
+            }
+        }
 
         {
             ScopedTimer timer(
-                "Joint matrix generation",
-                &frameProfile.jointMatrixGenerationMs);
+                "Crowd joint matrix generation",
+                &crowdProfile.jointMatrixGenerationMs);
 
-            UpdateJointMatrices(
-                skeleton,
-                animator.GetPose(),
-                jointMatrices);
+            for (AnimatedCharacter &character : characters)
+            {
+                UpdateJointMatrices(
+                    skeleton,
+                    character.animator.GetPose(),
+                    character.jointMatrices);
+            }
         }
 
-        skinningMs = skinningTimer.StopMilliseconds();
-        if (showRootMotionPath &&
+        frameProfile.jointMatrixGenerationMs =
+            crowdProfile.jointMatrixGenerationMs;
+
+        if (crowdProfile.animationUpdateMs > 0.0)
+        {
+            crowdProfile.charactersUpdatedPerSecond =
+                static_cast<double>(characters.size()) /
+                (crowdProfile.animationUpdateMs / 1000.0);
+        }
+        else
+        {
+            crowdProfile.charactersUpdatedPerSecond = 0.0;
+        }
+
+        crowdProfile.estimatedMemoryBytes =
+            EstimateCrowdMemoryBytes(
+                characters.size(),
+                skeleton.joints.size());
+
+        crowdProfile.fullFrameMs = frameProfile.fullFrameMs;
+
+        const double smoothing = 0.05;
+
+        if (crowdProfile.averageFrameMs <= 0.0)
+        {
+            crowdProfile.averageFrameMs = crowdProfile.fullFrameMs;
+        }
+        else
+        {
+            crowdProfile.averageFrameMs =
+                crowdProfile.averageFrameMs * (1.0 - smoothing) +
+                crowdProfile.fullFrameMs * smoothing;
+        }
+
+        if (debugAnimator != nullptr &&
+            showRootMotionPath &&
             rootMotionJoint >= 0 &&
-            rootMotionJoint < static_cast<int>(animator.GetPose().global.size()))
+            rootMotionJoint < static_cast<int>(debugAnimator->GetPose().global.size()))
         {
             const glm::vec3 rootPosition =
-                glm::vec3(animator.GetPose().global[rootMotionJoint][3]);
+                glm::vec3(debugAnimator->GetPose().global[rootMotionJoint][3]);
 
             if (rootMotionPath.empty() ||
                 glm::distance(rootMotionPath.back(), rootPosition) > 0.01f)
@@ -541,6 +713,9 @@ int main()
                 rootMotionPath.erase(rootMotionPath.begin());
             }
         }
+
+        bool rebuildCharacters = false;
+
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
@@ -552,37 +727,52 @@ int main()
 
         if (ImGui::CollapsingHeader("Animation", ImGuiTreeNodeFlags_DefaultOpen))
         {
-            const AnimationClip *currentClip = animator.GetCurrentClip();
+            const AnimationClip *currentClip =
+                debugAnimator != nullptr
+                    ? debugAnimator->GetCurrentClip()
+                    : nullptr;
 
             ImGui::Text("Current state: %s", animationGraph.currentState.c_str());
 
-            if (currentClip != nullptr)
+            if (currentClip != nullptr && debugAnimator != nullptr)
             {
                 const float normalizedTime =
                     currentClip->duration > 0.0f
-                        ? animator.GetCurrentTime() / currentClip->duration
+                        ? debugAnimator->GetCurrentTime() / currentClip->duration
                         : 0.0f;
 
                 ImGui::Text("Current clip: %s", currentClip->name.c_str());
                 ImGui::Text(
                     "Animation time: %.3f / %.3f",
-                    animator.GetCurrentTime(),
+                    debugAnimator->GetCurrentTime(),
                     currentClip->duration);
                 ImGui::Text("Normalized time: %.3f", normalizedTime);
             }
 
-            float playbackSpeed = animator.GetPlaybackSpeed();
+            float playbackSpeed =
+                debugAnimator != nullptr
+                    ? debugAnimator->GetPlaybackSpeed()
+                    : 1.0f;
 
             if (ImGui::SliderFloat("Playback speed", &playbackSpeed, 0.0f, 3.0f))
             {
-                animator.SetPlaybackSpeed(playbackSpeed);
+                for (AnimatedCharacter &character : characters)
+                {
+                    character.animator.SetPlaybackSpeed(playbackSpeed);
+                }
             }
 
-            bool looping = animator.IsLooping();
+            bool looping =
+                debugAnimator != nullptr
+                    ? debugAnimator->IsLooping()
+                    : true;
 
             if (ImGui::Checkbox("Loop", &looping))
             {
-                animator.SetLooping(looping);
+                for (AnimatedCharacter &character : characters)
+                {
+                    character.animator.SetLooping(looping);
+                }
             }
 
             ImGui::Text(
@@ -594,13 +784,12 @@ int main()
             ImGui::Text("2 = speed 1.0");
             ImGui::Text("3 = speed 4.0");
         }
-
         if (ImGui::CollapsingHeader("Blending", ImGuiTreeNodeFlags_DefaultOpen))
         {
-            if (animator.IsBlending())
+            if (debugAnimator != nullptr && debugAnimator->IsBlending())
             {
-                const AnimationClip *previousClip = animator.GetPreviousClip();
-                const AnimationClip *currentClip = animator.GetCurrentClip();
+                const AnimationClip *previousClip = debugAnimator->GetPreviousClip();
+                const AnimationClip *currentClip = debugAnimator->GetCurrentClip();
 
                 if (previousClip != nullptr)
                 {
@@ -612,23 +801,22 @@ int main()
                     ImGui::Text("Target clip: %s", currentClip->name.c_str());
                 }
 
-                ImGui::Text("Blend weight: %.2f", animator.GetBlendWeight());
+                ImGui::Text("Blend weight: %.2f", debugAnimator->GetBlendWeight());
                 ImGui::Text(
                     "Blend time: %.3f / %.3f",
-                    animator.GetBlendElapsed(),
-                    animator.GetBlendDuration());
+                    debugAnimator->GetBlendElapsed(),
+                    debugAnimator->GetBlendDuration());
             }
             else
             {
                 ImGui::Text("Blending: no");
             }
         }
-
         if (ImGui::CollapsingHeader("Skeleton", ImGuiTreeNodeFlags_DefaultOpen))
         {
             ImGui::Text("Joint count: %zu", skeleton.joints.size());
 
-            if (!skeleton.joints.empty())
+            if (!skeleton.joints.empty() && debugAnimator != nullptr)
             {
                 selectedJoint = std::clamp(
                     selectedJoint,
@@ -659,7 +847,7 @@ int main()
                     ImGui::Text("Parent name: none");
                 }
 
-                const Pose &pose = animator.GetPose();
+                const Pose &pose = debugAnimator->GetPose();
 
                 if (selectedJoint < static_cast<int>(pose.local.size()))
                 {
@@ -706,7 +894,6 @@ int main()
                 }
             }
         }
-
         if (ImGui::CollapsingHeader("Debug Rendering", ImGuiTreeNodeFlags_DefaultOpen))
         {
             ImGui::Checkbox("Show mesh", &showMesh);
@@ -724,8 +911,12 @@ int main()
 
         if (ImGui::CollapsingHeader("Performance", ImGuiTreeNodeFlags_DefaultOpen))
         {
-            const AnimationTimingStats &timing =
-                animator.GetTimingStats();
+            AnimationTimingStats timing{};
+
+            if (debugAnimator != nullptr)
+            {
+                timing = debugAnimator->GetTimingStats();
+            }
 
             if (ImGui::BeginTable(
                     "PerformanceTable",
@@ -751,13 +942,32 @@ int main()
 
                 AddRow("Animation sampling", timing.samplingMs);
                 AddRow("Local-to-global pose", timing.localToGlobalMs);
-                AddRow("Joint matrix generation", frameProfile.jointMatrixGenerationMs);
+                AddRow("Crowd animation update", crowdProfile.animationUpdateMs);
+                AddRow("Crowd joint matrix generation", crowdProfile.jointMatrixGenerationMs);
                 AddRow("Joint matrix upload", frameProfile.jointMatrixUploadMs);
                 AddRow("Rendering", frameProfile.renderMs);
                 AddRow("Full frame", frameProfile.fullFrameMs);
 
                 ImGui::EndTable();
             }
+
+            ImGui::Separator();
+
+            ImGui::Text("Characters: %zu", characters.size());
+            ImGui::Text("Joint count per character: %zu", skeleton.joints.size());
+            ImGui::Text(
+                "Total animated joints: %zu",
+                characters.size() * skeleton.joints.size());
+            ImGui::Text(
+                "Characters updated/sec: %.0f",
+                crowdProfile.charactersUpdatedPerSecond);
+
+            const double memoryMb =
+                static_cast<double>(crowdProfile.estimatedMemoryBytes) /
+                (1024.0 * 1024.0);
+
+            ImGui::Text("Estimated animation memory: %.2f MB", memoryMb);
+            ImGui::Text("Average frame time: %.3f ms", crowdProfile.averageFrameMs);
 
             ImGui::Separator();
 
@@ -796,9 +1006,118 @@ int main()
             ImGui::Text("FPS: %.1f", io.Framerate);
         }
 
+        if (ImGui::CollapsingHeader("Crowd Test", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            ImGui::Text("Character count");
+
+            if (ImGui::Button("1"))
+            {
+                requestedCharacterCount = 1;
+                rebuildCharacters = true;
+            }
+
+            ImGui::SameLine();
+
+            if (ImGui::Button("10"))
+            {
+                requestedCharacterCount = 10;
+                rebuildCharacters = true;
+            }
+
+            ImGui::SameLine();
+
+            if (ImGui::Button("100"))
+            {
+                requestedCharacterCount = 100;
+                rebuildCharacters = true;
+            }
+
+            ImGui::SameLine();
+
+            if (ImGui::Button("500"))
+            {
+                requestedCharacterCount = 500;
+                rebuildCharacters = true;
+            }
+
+            ImGui::Text("Current characters: %zu", characters.size());
+
+            ImGui::Separator();
+
+            if (ImGui::RadioButton(
+                    "Same clip",
+                    characterAnimationMode == CharacterAnimationMode::SameClip))
+            {
+                if (characterAnimationMode != CharacterAnimationMode::SameClip)
+                {
+                    characterAnimationMode = CharacterAnimationMode::SameClip;
+                    rebuildCharacters = true;
+                }
+            }
+
+            if (ImGui::RadioButton(
+                    "Random clip",
+                    characterAnimationMode == CharacterAnimationMode::RandomClip))
+            {
+                if (characterAnimationMode != CharacterAnimationMode::RandomClip)
+                {
+                    characterAnimationMode = CharacterAnimationMode::RandomClip;
+                    rebuildCharacters = true;
+                }
+            }
+
+            if (ImGui::RadioButton(
+                    "Random phase",
+                    characterAnimationMode == CharacterAnimationMode::RandomPhase))
+            {
+                if (characterAnimationMode != CharacterAnimationMode::RandomPhase)
+                {
+                    characterAnimationMode = CharacterAnimationMode::RandomPhase;
+                    rebuildCharacters = true;
+                }
+            }
+
+            ImGui::Separator();
+
+            ImGui::Text("Skinning");
+
+            if (ImGui::RadioButton("GPU", skinningMode == SkinningMode::GPU))
+            {
+                skinningMode = SkinningMode::GPU;
+            }
+
+            if (ImGui::RadioButton("CPU", skinningMode == SkinningMode::CPU))
+            {
+                skinningMode = SkinningMode::CPU;
+            }
+
+            if (skinningMode == SkinningMode::CPU)
+            {
+                ImGui::TextWrapped(
+                    "CPU skinning path is not implemented yet. "
+                    "This mode is reserved for a later CPU skinning benchmark.");
+            }
+
+            ImGui::Checkbox("Debug skeletons", &showSkeleton);
+        }
         ImGui::End();
 
         ImGui::Render();
+
+        if (rebuildCharacters || requestedCharacterCount != characterCount)
+        {
+            characterCount = requestedCharacterCount;
+
+            RebuildCharacters(
+                characters,
+                characterCount,
+                characterAnimationMode,
+                skeleton,
+                animationClips,
+                initialState->clipIndex);
+
+            rootMotionPath.clear();
+        }
 
         int framebufferWidth = 0;
         int framebufferHeight = 0;
@@ -839,86 +1158,137 @@ int main()
             0.1f,
             100.0f);
 
-        const glm::mat4 mvp = projection * view * model;
+        frameProfile.jointMatrixUploadMs = 0.0;
 
-        glViewport(0, 0, framebufferWidth, framebufferHeight);
-        glClearColor(0.08f, 0.09f, 0.11f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-        CpuTimer renderTimer;
-        renderTimer.Start();
-
-        if (showMesh)
         {
-            meshShader.Use();
-            meshShader.SetMat4("uMVP", mvp);
+            ScopedTimer renderTimer(
+                "Rendering",
+                &frameProfile.renderMs);
 
+            glViewport(0, 0, framebufferWidth, framebufferHeight);
+            glClearColor(0.08f, 0.09f, 0.11f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+            if (showMesh && skinningMode == SkinningMode::GPU)
             {
-                ScopedTimer timer(
-                    "Joint matrix upload",
-                    &frameProfile.jointMatrixUploadMs);
+                meshShader.Use();
 
-                meshShader.SetMat4Array("uJointMatrices[0]", jointMatrices);
+                for (const AnimatedCharacter &character : characters)
+                {
+                    const glm::mat4 characterModel =
+                        character.worldTransform * model;
+
+                    const glm::mat4 characterMvp =
+                        projection * view * characterModel;
+
+                    meshShader.SetMat4("uMVP", characterMvp);
+
+                    double uploadMs = 0.0;
+
+                    {
+                        ScopedTimer uploadTimer(
+                            "Joint matrix upload",
+                            &uploadMs);
+
+                        meshShader.SetMat4Array(
+                            "uJointMatrices[0]",
+                            character.jointMatrices);
+                    }
+
+                    frameProfile.jointMatrixUploadMs += uploadMs;
+
+                    mesh.Draw();
+                }
             }
 
-            mesh.Draw();
+            if (!characters.empty())
+            {
+                const int maxDebugSkeletons =
+                    characters.size() > 100
+                        ? 10
+                        : static_cast<int>(characters.size());
+
+                if (showSkeleton)
+                {
+                    for (int i = 0; i < maxDebugSkeletons; ++i)
+                    {
+                        const AnimatedCharacter &character =
+                            characters[static_cast<std::size_t>(i)];
+
+                        const std::vector<glm::mat4> &poseToDraw =
+                            showBindPose
+                                ? bindPoseGlobalMatrices
+                                : character.animator.GetPose().global;
+
+                        const glm::mat4 characterModel =
+                            character.worldTransform * model;
+
+                        const glm::mat4 characterMvp =
+                            projection * view * characterModel;
+
+                        debugDraw.Begin();
+
+                        debugDraw.AddSkeleton(
+                            skeleton,
+                            poseToDraw,
+                            glm::vec3(1.0f, 1.0f, 0.0f));
+
+                        debugDraw.Draw(characterMvp);
+                    }
+                }
+
+                if (showJointMarkers || showRootMotionPath || showForwardVector)
+                {
+                    const AnimatedCharacter &debugCharacter = characters[0];
+
+                    const std::vector<glm::mat4> &poseToDraw =
+                        showBindPose
+                            ? bindPoseGlobalMatrices
+                            : debugCharacter.animator.GetPose().global;
+
+                    const glm::mat4 debugModel =
+                        debugCharacter.worldTransform * model;
+
+                    const glm::mat4 debugMvp =
+                        projection * view * debugModel;
+
+                    debugDraw.Begin();
+
+                    if (showJointMarkers)
+                    {
+                        debugDraw.AddJointMarkers(
+                            poseToDraw,
+                            selectedJoint,
+                            0.025f);
+                    }
+
+                    if (showRootMotionPath)
+                    {
+                        debugDraw.AddPath(
+                            rootMotionPath,
+                            glm::vec3(0.0f, 1.0f, 1.0f));
+                    }
+
+                    if (showForwardVector && !poseToDraw.empty())
+                    {
+                        const glm::vec3 origin =
+                            glm::vec3(poseToDraw[0][3]);
+
+                        debugDraw.AddForwardVector(
+                            origin,
+                            glm::vec3(0.0f, 0.0f, 1.0f),
+                            0.5f,
+                            glm::vec3(1.0f, 0.0f, 1.0f));
+                    }
+
+                    debugDraw.Draw(debugMvp);
+                }
+            }
+
+            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         }
 
-        const std::vector<glm::mat4> &poseToDraw =
-            showBindPose
-                ? bindPoseGlobalMatrices
-                : animator.GetPose().global;
-
-        if (showSkeleton ||
-            showJointMarkers ||
-            showRootMotionPath ||
-            showForwardVector)
-        {
-            debugDraw.Begin();
-
-            if (showSkeleton)
-            {
-                debugDraw.AddSkeleton(
-                    skeleton,
-                    poseToDraw,
-                    glm::vec3(1.0f, 1.0f, 0.0f));
-            }
-
-            if (showJointMarkers)
-            {
-                debugDraw.AddJointMarkers(
-                    poseToDraw,
-                    selectedJoint,
-                    0.025f);
-            }
-
-            if (showRootMotionPath)
-            {
-                debugDraw.AddPath(
-                    rootMotionPath,
-                    glm::vec3(0.0f, 1.0f, 1.0f));
-            }
-
-            if (showForwardVector && !poseToDraw.empty())
-            {
-                const glm::vec3 origin =
-                    glm::vec3(poseToDraw[0][3]);
-
-                debugDraw.AddForwardVector(
-                    origin,
-                    glm::vec3(0.0f, 0.0f, 1.0f),
-                    0.5f,
-                    glm::vec3(1.0f, 0.0f, 1.0f));
-            }
-
-            debugDraw.Draw(mvp);
-        }
-
-        renderMs = renderTimer.StopMilliseconds();
-
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-        totalFrameMs = totalFrameTimer.StopMilliseconds();
+        crowdProfile.renderMs = frameProfile.renderMs;
 
         glfwSwapBuffers(window);
     }
