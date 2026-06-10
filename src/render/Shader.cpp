@@ -66,11 +66,28 @@ void Shader::Destroy()
     }
 }
 
-// Setting a mat4 uniform variable in the shader program
-void Shader::SetMat4(const std::string &name, const glm::mat4 &value) const
+GLint Shader::GetUniformLocation(const std::string &name) const
 {
-    GLint location = glGetUniformLocation(m_program, name.c_str());
+    if (m_program == 0)
+    {
+        return -1;
+    }
 
+    return glGetUniformLocation(m_program, name.c_str());
+}
+
+void Shader::SetMat4(
+    const std::string &name,
+    const glm::mat4 &value) const
+{
+    const GLint location = GetUniformLocation(name);
+    SetMat4(location, value);
+}
+
+void Shader::SetMat4(
+    GLint location,
+    const glm::mat4 &value) const
+{
     if (location == -1)
     {
         return;
@@ -83,19 +100,19 @@ void Shader::SetMat4(const std::string &name, const glm::mat4 &value) const
         glm::value_ptr(value));
 }
 
-// Setting an array of mat4 uniform variables in the shader program
 void Shader::SetMat4Array(
     const std::string &name,
     const std::vector<glm::mat4> &values) const
 {
-    if (values.empty())
-    {
-        return;
-    }
+    const GLint location = GetUniformLocation(name);
+    SetMat4Array(location, values);
+}
 
-    GLint location = glGetUniformLocation(m_program, name.c_str());
-
-    if (location == -1)
+void Shader::SetMat4Array(
+    GLint location,
+    const std::vector<glm::mat4> &values) const
+{
+    if (location == -1 || values.empty())
     {
         return;
     }

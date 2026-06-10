@@ -122,11 +122,18 @@ namespace
         const Pose &pose,
         std::vector<glm::mat4> &jointMatrices)
     {
-        jointMatrices.resize(skeleton.joints.size());
+        const std::size_t jointCount = skeleton.joints.size();
 
-        for (std::size_t jointIndex = 0;
-             jointIndex < skeleton.joints.size();
-             ++jointIndex)
+        if (jointMatrices.size() != jointCount ||
+            pose.global.size() != jointCount)
+        {
+            std::cerr
+                << "UpdateJointMatrices failed: incorrect pose or joint matrix size.\n";
+
+            return;
+        }
+
+        for (std::size_t jointIndex = 0; jointIndex < jointCount; ++jointIndex)
         {
             jointMatrices[jointIndex] =
                 pose.global[jointIndex] *
@@ -277,7 +284,7 @@ namespace
 
         std::uniform_int_distribution<int> clipDistribution(
             0,
-            glm::max(clipCount - 1, 0));
+            std::max(clipCount - 1, 0));
 
         for (int i = 0; i < characterCount; ++i)
         {
@@ -408,6 +415,22 @@ int main()
         glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
+    }
+
+    const GLint uMvpLocation =
+        meshShader.GetUniformLocation("uMVP");
+
+    const GLint uJointMatricesLocation =
+        meshShader.GetUniformLocation("uJointMatrices[0]");
+
+    if (uMvpLocation == -1)
+    {
+        std::cerr << "Warning: uMVP uniform not found.\n";
+    }
+
+    if (uJointMatricesLocation == -1)
+    {
+        std::cerr << "Warning: uJointMatrices uniform not found.\n";
     }
 
     const std::string graphPath = "assets/graphs/fox_anim_graph.json";
@@ -1270,7 +1293,7 @@ int main()
                     const glm::mat4 characterMvp =
                         projection * view * characterModel;
 
-                    meshShader.SetMat4("uMVP", characterMvp);
+                    meshShader.SetMat4(uMvpLocation, characterMvp);
 
                     double uploadMs = 0.0;
 
@@ -1280,7 +1303,7 @@ int main()
                             &uploadMs);
 
                         meshShader.SetMat4Array(
-                            "uJointMatrices[0]",
+                            uJointMatricesLocation,
                             character.jointMatrices);
                     }
 

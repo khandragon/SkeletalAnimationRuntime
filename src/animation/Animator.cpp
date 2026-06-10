@@ -21,6 +21,8 @@ void Animator::Initialize(
     m_isBlending = false;
     m_blendElapsed = 0.0f;
     m_blendDuration = 0.0f;
+    m_currentKeyframeCache.clear();
+    m_previousKeyframeCache.clear();
 
     if (m_skeleton != nullptr)
     {
@@ -58,6 +60,17 @@ void Animator::Play(std::size_t clipIndex, bool resetTime)
         m_time = 0.0f;
         m_previousTime = 0.0f;
     }
+
+    const AnimationClip &clip = (*m_clips)[m_currentClipIndex];
+
+    PrepareKeyframeCache(m_currentKeyframeCache, clip);
+    PrepareKeyframeCache(m_previousKeyframeCache, clip);
+
+    if (resetTime)
+    {
+        ResetKeyframeCache(m_currentKeyframeCache);
+        ResetKeyframeCache(m_previousKeyframeCache);
+    }
 }
 
 void Animator::CrossFadeTo(std::size_t clipIndex, float blendDuration)
@@ -86,14 +99,101 @@ void Animator::CrossFadeTo(std::size_t clipIndex, float blendDuration)
     // The current clip becomes the source of the blend.
     m_previousClipIndex = m_currentClipIndex;
     m_previousTime = m_time;
+    m_previousKeyframeCache = m_currentKeyframeCache;
 
     // The requested clip becomes the destination.
     m_currentClipIndex = clipIndex;
     m_time = 0.0f;
 
+    const AnimationClip &currentClip = (*m_clips)[m_currentClipIndex];
+
+    PrepareKeyframeCache(m_currentKeyframeCache, currentClip);
+    ResetKeyframeCache(m_currentKeyframeCache);
+
     m_isBlending = true;
     m_blendElapsed = 0.0f;
     m_blendDuration = blendDuration;
+}
+
+void Animator::SetCurrentTime(float time)
+{
+    const AnimationClip *clip = GetCurrentClip();
+
+    if (clip == nullptr || clip->duration <= 0.0f)
+    {
+        m_time = time;
+        ResetKeyframeCache(m_currentKeyframeCache);
+        return;
+    }
+
+    m_time = NormalizeClipTime(time, clip->duration);
+    ResetKeyframeCache(m_currentKeyframeCache);
+}
+
+void Animator::SetNormalizedTime(float normalizedTime)
+{
+    const AnimationClip *clip = GetCurrentClip();
+
+    if (clip == nullptr || clip->duration <= 0.0f)
+    {
+        return;
+    }
+
+    SetCurrentTime(normalizedTime * clip->duration);
+}
+
+float Animator::NormalizeClipTime(float time, float duration) const
+{
+    if (duration <= 0.0f)
+    {
+        return 0.0f;
+    }
+
+    if (m_loop)
+    {
+        float wrappedTime = std::fmod(time, duration);
+
+        if (wrappedTime < 0.0f)
+        {
+            wrappedTime += duration;
+        }
+
+        return wrappedTime;
+    }
+
+    return std::clamp(time, 0.0f, duration);
+}
+
+float Animator::AdvanceClipTime(
+    float time,
+    float deltaTime,
+    float duration,
+    std::vector<std::size_t> &keyframeCache)
+{
+    const float previousTime = time;
+
+    const float newTime =
+        NormalizeClipTime(
+            time + deltaTime * m_playbackSpeed,
+            duration);
+
+    if (m_loop)
+    {
+        const bool wrappedForward =
+            m_playbackSpeed > 0.0f &&
+            newTime < previousTime;
+
+        const bool wrappedBackward =
+            m_playbackSpeed < 0.0f &&
+            newTime > previousTime;
+
+        if (wrappedForward || wrappedBackward)
+        {
+            ResetKeyframeCache(keyframeCache);
+        }
+    }
+
+    return newTime;
 }
 
 void Animator::Update(float deltaTime)
@@ -116,13 +216,11 @@ void Animator::Update(float deltaTime)
     }
 
     // Advance destination/current animation time.
-    m_time += deltaTime * m_playbackSpeed;
-    m_time = std::fmod(m_time, currentClip.duration);
-
-    if (m_time < 0.0f)
-    {
-        m_time += currentClip.duration;
-    }
+    m_time = AdvanceClipTime(
+        m_time,
+        deltaTime,
+        currentClip.duration,
+        m_currentKeyframeCache);
 
     if (!m_isBlending)
     {
@@ -132,7 +230,11 @@ void Animator::Update(float deltaTime)
                 &m_timingStats.samplingMs);
 
             ResetPoseToBindPose(m_pose);
-            SampleClip(currentClip, m_time, m_pose);
+            SampleClip(
+                currentClip,
+                m_time,
+                m_pose,
+                m_currentKeyframeCache);
         }
 
         {
@@ -161,13 +263,12 @@ void Animator::Update(float deltaTime)
     }
 
     // Advance source/previous animation time too.
-    m_previousTime += deltaTime * m_playbackSpeed;
-    m_previousTime = std::fmod(m_previousTime, previousClip.duration);
-
-    if (m_previousTime < 0.0f)
-    {
-        m_previousTime += previousClip.duration;
-    }
+    // Advance source/previous animation time too.
+    m_previousTime = AdvanceClipTime(
+        m_previousTime,
+        deltaTime,
+        previousClip.duration,
+        m_previousKeyframeCache);
 
     m_blendElapsed += deltaTime;
 
@@ -176,14 +277,22 @@ void Animator::Update(float deltaTime)
     {
         ScopedTimer timer(
             "Animation sampling",
-            &m_timingStats.samplingMs
-        );
+            &m_timingStats.samplingMs);
 
         ResetPoseToBindPose(m_fromPose);
         ResetPoseToBindPose(m_toPose);
 
-        SampleClip(previousClip, m_previousTime, m_fromPose);
-        SampleClip(currentClip, m_time, m_toPose);
+        SampleClip(
+            previousClip,
+            m_previousTime,
+            m_fromPose,
+            m_previousKeyframeCache);
+
+        SampleClip(
+            currentClip,
+            m_time,
+            m_toPose,
+            m_currentKeyframeCache);
 
         BlendLocalPoses(m_fromPose, m_toPose, weight, m_pose);
     }
@@ -191,8 +300,7 @@ void Animator::Update(float deltaTime)
     {
         ScopedTimer timer(
             "Local-to-global pose",
-            &m_timingStats.localToGlobalMs
-        );
+            &m_timingStats.localToGlobalMs);
 
         ComputeGlobalPose(m_pose);
     }
@@ -204,6 +312,7 @@ void Animator::Update(float deltaTime)
         m_blendDuration = 0.0f;
         m_previousClipIndex = m_currentClipIndex;
         m_previousTime = m_time;
+        m_previousKeyframeCache = m_currentKeyframeCache;
     }
 }
 
@@ -254,12 +363,19 @@ void Animator::ResetPoseToBindPose(Pose &pose)
         return;
     }
 
-    pose.Resize(m_skeleton->joints.size());
+    const std::size_t jointCount = m_skeleton->joints.size();
 
-    for (std::size_t i = 0; i < m_skeleton->joints.size(); ++i)
+    if (!pose.HasSize(jointCount))
+    {
+        std::cerr
+            << "ResetPoseToBindPose failed: pose was not preallocated.\n";
+
+        return;
+    }
+
+    for (std::size_t i = 0; i < jointCount; ++i)
     {
         pose.local[i] = m_skeleton->joints[i].bindLocalTransform;
-        pose.global[i] = glm::mat4(1.0f);
     }
 }
 
@@ -293,10 +409,23 @@ void Animator::ComputeGlobalPose(Pose &pose)
 void Animator::SampleClip(
     const AnimationClip &clip,
     float time,
-    Pose &pose)
+    Pose &pose,
+    std::vector<std::size_t> &keyframeCache)
 {
-    for (const AnimationChannel &channel : clip.channels)
+    if (keyframeCache.size() != clip.channels.size())
     {
+        std::cerr
+            << "SampleClip failed: keyframe cache was not prepared.\n";
+
+        return;
+    }
+
+    for (std::size_t channelIndex = 0;
+         channelIndex < clip.channels.size();
+         ++channelIndex)
+    {
+        const AnimationChannel &channel = clip.channels[channelIndex];
+
         if (channel.jointIndex < 0 ||
             channel.jointIndex >= static_cast<int>(pose.local.size()))
         {
@@ -306,6 +435,9 @@ void Animator::SampleClip(
         Transform &jointTransform =
             pose.local[static_cast<std::size_t>(channel.jointIndex)];
 
+        std::size_t &cachedKeyIndex =
+            keyframeCache[channelIndex];
+
         switch (channel.path)
         {
         case ChannelPath::Translation:
@@ -313,7 +445,8 @@ void Animator::SampleClip(
                 SampleVec3Channel(
                     channel,
                     time,
-                    jointTransform.translation);
+                    jointTransform.translation,
+                    cachedKeyIndex);
             break;
 
         case ChannelPath::Rotation:
@@ -321,7 +454,8 @@ void Animator::SampleClip(
                 SampleRotationChannel(
                     channel,
                     time,
-                    jointTransform.rotation);
+                    jointTransform.rotation,
+                    cachedKeyIndex);
             break;
 
         case ChannelPath::Scale:
@@ -329,7 +463,8 @@ void Animator::SampleClip(
                 SampleVec3Channel(
                     channel,
                     time,
-                    jointTransform.scale);
+                    jointTransform.scale,
+                    cachedKeyIndex);
             break;
         }
     }
@@ -348,14 +483,22 @@ void Animator::BlendLocalPoses(
 
     const std::size_t jointCount = m_skeleton->joints.size();
 
-    outPose.Resize(jointCount);
+    if (!fromPose.HasSize(jointCount) ||
+        !toPose.HasSize(jointCount) ||
+        !outPose.HasSize(jointCount))
+    {
+        std::cerr
+            << "BlendLocalPoses failed: poses were not preallocated.\n";
+
+        return;
+    }
 
     for (std::size_t jointIndex = 0; jointIndex < jointCount; ++jointIndex)
     {
         const Transform &a = fromPose.local[jointIndex];
         const Transform &b = toPose.local[jointIndex];
 
-        Transform blended{};
+        Transform &blended = outPose.local[jointIndex];
 
         blended.translation =
             glm::mix(a.translation, b.translation, weight);
@@ -365,40 +508,77 @@ void Animator::BlendLocalPoses(
 
         blended.scale =
             glm::mix(a.scale, b.scale, weight);
-
-        outPose.local[jointIndex] = blended;
     }
 }
 
-std::size_t Animator::FindKeyframeIndex(
+void Animator::PrepareKeyframeCache(
+    std::vector<std::size_t> &cache,
+    const AnimationClip &clip)
+{
+    if (cache.size() != clip.channels.size())
+    {
+        cache.assign(clip.channels.size(), 0);
+    }
+}
+
+void Animator::ResetKeyframeCache(
+    std::vector<std::size_t> &cache)
+{
+    std::fill(cache.begin(), cache.end(), 0);
+}
+
+std::size_t Animator::FindCachedKeyframeIndex(
     const std::vector<float> &times,
-    float time)
+    float time,
+    std::size_t &cachedKeyIndex)
 {
     if (times.size() < 2)
     {
+        cachedKeyIndex = 0;
         return 0;
     }
+
+    const std::size_t lastValidIndex = times.size() - 2;
 
     if (time <= times.front())
     {
+        cachedKeyIndex = 0;
         return 0;
     }
 
-    for (std::size_t i = 0; i + 1 < times.size(); ++i)
+    if (time >= times.back())
     {
-        if (time >= times[i] && time <= times[i + 1])
-        {
-            return i;
-        }
+        cachedKeyIndex = lastValidIndex;
+        return lastValidIndex;
     }
 
-    return times.size() - 2;
+    if (cachedKeyIndex > lastValidIndex)
+    {
+        cachedKeyIndex = 0;
+    }
+
+    // Animation usually moves forward, so this is usually one cheap step.
+    while (cachedKeyIndex < lastValidIndex &&
+           time > times[cachedKeyIndex + 1])
+    {
+        ++cachedKeyIndex;
+    }
+
+    // Handles looping, seeking, or random phase changes.
+    while (cachedKeyIndex > 0 &&
+           time < times[cachedKeyIndex])
+    {
+        --cachedKeyIndex;
+    }
+
+    return cachedKeyIndex;
 }
 
 glm::vec3 Animator::SampleVec3Channel(
     const AnimationChannel &channel,
     float time,
-    const glm::vec3 &fallback)
+    const glm::vec3 &fallback,
+    std::size_t &cachedKeyIndex)
 {
     if (channel.times.empty() || channel.values.empty())
     {
@@ -407,21 +587,27 @@ glm::vec3 Animator::SampleVec3Channel(
 
     if (channel.times.size() == 1 || channel.values.size() == 1)
     {
+        cachedKeyIndex = 0;
         return glm::vec3(channel.values.front());
     }
 
     if (time <= channel.times.front())
     {
+        cachedKeyIndex = 0;
         return glm::vec3(channel.values.front());
     }
 
     if (time >= channel.times.back())
     {
+        cachedKeyIndex = channel.times.size() - 2;
         return glm::vec3(channel.values.back());
     }
 
     const std::size_t keyIndex =
-        FindKeyframeIndex(channel.times, time);
+        FindCachedKeyframeIndex(
+            channel.times,
+            time,
+            cachedKeyIndex);
 
     const float t0 = channel.times[keyIndex];
     const float t1 = channel.times[keyIndex + 1];
@@ -440,7 +626,8 @@ glm::vec3 Animator::SampleVec3Channel(
 glm::quat Animator::SampleRotationChannel(
     const AnimationChannel &channel,
     float time,
-    const glm::quat &fallback)
+    const glm::quat &fallback,
+    std::size_t &cachedKeyIndex)
 {
     if (channel.times.empty() || channel.values.empty())
     {
@@ -460,21 +647,27 @@ glm::quat Animator::SampleRotationChannel(
 
     if (channel.times.size() == 1 || channel.values.size() == 1)
     {
+        cachedKeyIndex = 0;
         return ToQuat(channel.values.front());
     }
 
     if (time <= channel.times.front())
     {
+        cachedKeyIndex = 0;
         return ToQuat(channel.values.front());
     }
 
     if (time >= channel.times.back())
     {
+        cachedKeyIndex = channel.times.size() - 2;
         return ToQuat(channel.values.back());
     }
 
     const std::size_t keyIndex =
-        FindKeyframeIndex(channel.times, time);
+        FindCachedKeyframeIndex(
+            channel.times,
+            time,
+            cachedKeyIndex);
 
     const float t0 = channel.times[keyIndex];
     const float t1 = channel.times[keyIndex + 1];

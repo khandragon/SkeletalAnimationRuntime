@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -13,7 +14,20 @@ struct Pose
 
     void Resize(std::size_t jointCount)
     {
-        local.resize(jointCount);
-        global.resize(jointCount);
+        if (local.size() != jointCount)
+        {
+            local.resize(jointCount);
+        }
+
+        if (global.size() != jointCount)
+        {
+            global.resize(jointCount);
+        }
+    }
+
+    bool HasSize(std::size_t jointCount) const
+    {
+        return local.size() == jointCount &&
+               global.size() == jointCount;
     }
 };

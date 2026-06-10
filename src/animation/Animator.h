@@ -3,6 +3,9 @@
 #include <cstddef>
 #include <vector>
 
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
+
 #include "animation/AnimationClip.h"
 #include "animation/Pose.h"
 #include "animation/Skeleton.h"
@@ -37,20 +40,9 @@ public:
 
     float GetCurrentTime() const { return m_time; }
 
-    void SetCurrentTime(float time) { m_time = time; }
+    void SetCurrentTime(float time);
+    void SetNormalizedTime(float normalizedTime);
 
-    void SetNormalizedTime(float normalizedTime)
-    {
-        const AnimationClip* clip = GetCurrentClip();
-
-        if (clip == nullptr || clip->duration <= 0.0f)
-        {
-            return;
-        }
-
-        m_time = normalizedTime * clip->duration;
-    }
-    
     bool IsBlending() const { return m_isBlending; }
     float GetBlendWeight() const;
     float GetBlendDuration() const { return m_blendDuration; }
@@ -90,15 +82,25 @@ private:
     bool m_loop = true;
 
     AnimationTimingStats m_timingStats;
+    std::vector<std::size_t> m_currentKeyframeCache;
+    std::vector<std::size_t> m_previousKeyframeCache;
 
 private:
     void ResetPoseToBindPose(Pose &pose);
     void ComputeGlobalPose(Pose &pose);
+    float NormalizeClipTime(float time, float duration) const;
+
+    float AdvanceClipTime(
+        float time,
+        float deltaTime,
+        float duration,
+        std::vector<std::size_t> &keyframeCache);
 
     void SampleClip(
         const AnimationClip &clip,
         float time,
-        Pose &pose);
+        Pose &pose,
+        std::vector<std::size_t> &keyframeCache);
 
     void BlendLocalPoses(
         const Pose &fromPose,
@@ -106,17 +108,27 @@ private:
         float weight,
         Pose &outPose);
 
+    void PrepareKeyframeCache(
+        std::vector<std::size_t> &cache,
+        const AnimationClip &clip);
+
+    static void ResetKeyframeCache(
+        std::vector<std::size_t> &cache);
+
     static glm::vec3 SampleVec3Channel(
         const AnimationChannel &channel,
         float time,
-        const glm::vec3 &fallback);
+        const glm::vec3 &fallback,
+        std::size_t &cachedKeyIndex);
 
     static glm::quat SampleRotationChannel(
         const AnimationChannel &channel,
         float time,
-        const glm::quat &fallback);
+        const glm::quat &fallback,
+        std::size_t &cachedKeyIndex);
 
-    static std::size_t FindKeyframeIndex(
+    static std::size_t FindCachedKeyframeIndex(
         const std::vector<float> &times,
-        float time);
+        float time,
+        std::size_t &cachedKeyIndex);
 };

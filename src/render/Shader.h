@@ -16,10 +16,21 @@ public:
     void Destroy();
 
     void SetMat4(const std::string &name, const glm::mat4 &value) const;
+
     void SetMat4Array(
         const std::string &name,
         const std::vector<glm::mat4> &values) const;
 
+    GLint GetUniformLocation(const std::string &name) const;
+
+    void SetMat4(
+        GLint location,
+        const glm::mat4 &value) const;
+
+    void SetMat4Array(
+        GLint location,
+        const std::vector<glm::mat4> &values) const;
+        
     GLuint GetProgram() const { return m_program; }
 
 private:
