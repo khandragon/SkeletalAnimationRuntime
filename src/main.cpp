@@ -79,6 +79,21 @@ namespace
 
         std::size_t estimatedMemoryBytes = 0;
     };
+    struct DebugCamera
+    {
+        glm::vec3 position{0.0f, 1.5f, 5.0f};
+
+        float yaw = -90.0f;
+        float pitch = -10.0f;
+
+        float moveSpeed = 4.0f;
+        float fastMoveMultiplier = 4.0f;
+        float mouseSensitivity = 0.12f;
+
+        bool rightMouseWasDown = false;
+        double lastMouseX = 0.0;
+        double lastMouseY = 0.0;
+    };
 
     static void GlfwErrorCallback(int error, const char *description)
     {
@@ -518,6 +533,174 @@ namespace
             character.animator.GetPose(),
             character.jointMatrices);
     }
+
+    glm::vec3 GetCameraForward(const DebugCamera &camera)
+    {
+        const float yawRadians =
+            glm::radians(camera.yaw);
+
+        const float pitchRadians =
+            glm::radians(camera.pitch);
+
+        glm::vec3 forward{};
+
+        forward.x =
+            std::cos(yawRadians) *
+            std::cos(pitchRadians);
+
+        forward.y =
+            std::sin(pitchRadians);
+
+        forward.z =
+            std::sin(yawRadians) *
+            std::cos(pitchRadians);
+
+        return glm::normalize(forward);
+    }
+
+    glm::vec3 GetCameraRight(const DebugCamera &camera)
+    {
+        const glm::vec3 forward =
+            GetCameraForward(camera);
+
+        return glm::normalize(
+            glm::cross(
+                forward,
+                glm::vec3(0.0f, 1.0f, 0.0f)));
+    }
+
+    glm::mat4 GetCameraViewMatrix(const DebugCamera &camera)
+    {
+        const glm::vec3 forward =
+            GetCameraForward(camera);
+
+        return glm::lookAt(
+            camera.position,
+            camera.position + forward,
+            glm::vec3(0.0f, 1.0f, 0.0f));
+    }
+
+    void UpdateDebugCamera(
+        GLFWwindow *window,
+        DebugCamera &camera,
+        float deltaTime,
+        bool allowKeyboardInput,
+        bool allowMouseInput)
+    {
+        const glm::vec3 forward =
+            GetCameraForward(camera);
+
+        const glm::vec3 right =
+            GetCameraRight(camera);
+
+        const glm::vec3 worldUp =
+            glm::vec3(0.0f, 1.0f, 0.0f);
+
+        float speed =
+            camera.moveSpeed;
+
+        if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+            glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS)
+        {
+            speed *= camera.fastMoveMultiplier;
+        }
+
+        const float moveAmount =
+            speed * deltaTime;
+
+        if (allowKeyboardInput)
+        {
+            if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+            {
+                camera.position += forward * moveAmount;
+            }
+
+            if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+            {
+                camera.position -= forward * moveAmount;
+            }
+
+            if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+            {
+                camera.position -= right * moveAmount;
+            }
+
+            if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+            {
+                camera.position += right * moveAmount;
+            }
+
+            if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS)
+            {
+                camera.position += worldUp * moveAmount;
+            }
+
+            if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS)
+            {
+                camera.position -= worldUp * moveAmount;
+            }
+        }
+
+        const bool rightMouseIsDown =
+            glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+
+        if (allowMouseInput && rightMouseIsDown)
+        {
+            double mouseX = 0.0;
+            double mouseY = 0.0;
+
+            glfwGetCursorPos(window, &mouseX, &mouseY);
+
+            if (!camera.rightMouseWasDown)
+            {
+                camera.lastMouseX = mouseX;
+                camera.lastMouseY = mouseY;
+
+                glfwSetInputMode(
+                    window,
+                    GLFW_CURSOR,
+                    GLFW_CURSOR_DISABLED);
+            }
+            else
+            {
+                const double deltaX =
+                    mouseX - camera.lastMouseX;
+
+                const double deltaY =
+                    mouseY - camera.lastMouseY;
+
+                camera.yaw +=
+                    static_cast<float>(deltaX) *
+                    camera.mouseSensitivity;
+
+                camera.pitch -=
+                    static_cast<float>(deltaY) *
+                    camera.mouseSensitivity;
+
+                camera.pitch =
+                    std::clamp(
+                        camera.pitch,
+                        -89.0f,
+                        89.0f);
+            }
+
+            camera.lastMouseX = mouseX;
+            camera.lastMouseY = mouseY;
+        }
+        else
+        {
+            if (camera.rightMouseWasDown)
+            {
+                glfwSetInputMode(
+                    window,
+                    GLFW_CURSOR,
+                    GLFW_CURSOR_NORMAL);
+            }
+        }
+
+        camera.rightMouseWasDown =
+            allowMouseInput && rightMouseIsDown;
+    }
 }
 
 int main()
@@ -538,6 +721,8 @@ int main()
     int requestedCharacterCount = 1;
 
     bool useMultithreadedAnimation = true;
+
+    DebugCamera camera;
 
     LoadingProfile loadingProfile;
     FrameProfile frameProfile;
@@ -1071,6 +1256,13 @@ int main()
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
+        UpdateDebugCamera(
+            window,
+            camera,
+            deltaTime,
+            !io.WantCaptureKeyboard,
+            !io.WantCaptureMouse);
+
         ImGui::Begin("Animation Runtime Debug");
 
         ImGui::Text("Debug Views");
@@ -1460,7 +1652,6 @@ int main()
             ImGui::Separator();
             ImGui::Text("FPS: %.1f", io.Framerate);
         }
-
         if (ImGui::CollapsingHeader("Crowd Test", ImGuiTreeNodeFlags_DefaultOpen))
         {
             ImGui::Text("Character count");
@@ -1563,6 +1754,52 @@ int main()
 
             ImGui::Checkbox("Debug skeletons", &showSkeleton);
         }
+        if (ImGui::CollapsingHeader("Camera", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            ImGui::Text("Controls:");
+            ImGui::Text("Right mouse = look around");
+            ImGui::Text("W/S = forward/back");
+            ImGui::Text("A/D = left/right");
+            ImGui::Text("Q/E = down/up");
+            ImGui::Text("Shift = faster movement");
+
+            ImGui::Separator();
+
+            ImGui::DragFloat3(
+                "Position",
+                &camera.position.x,
+                0.05f);
+
+            ImGui::SliderFloat(
+                "Yaw",
+                &camera.yaw,
+                -180.0f,
+                180.0f);
+
+            ImGui::SliderFloat(
+                "Pitch",
+                &camera.pitch,
+                -89.0f,
+                89.0f);
+
+            ImGui::SliderFloat(
+                "Move speed",
+                &camera.moveSpeed,
+                0.1f,
+                20.0f);
+
+            ImGui::SliderFloat(
+                "Mouse sensitivity",
+                &camera.mouseSensitivity,
+                0.01f,
+                1.0f);
+
+            if (ImGui::Button("Reset camera"))
+            {
+                camera = DebugCamera{};
+            }
+        }
+        
         ImGui::End();
 
         ImGui::Render();
@@ -1610,10 +1847,8 @@ int main()
             model,
             -meshDisplay.center);
 
-        const glm::mat4 view = glm::lookAt(
-            glm::vec3(0.0f, 1.5f, 5.0f),
-            glm::vec3(0.0f, 0.5f, 0.0f),
-            glm::vec3(0.0f, 1.0f, 0.0f));
+        const glm::mat4 view =
+            GetCameraViewMatrix(camera);
 
         const glm::mat4 projection = glm::perspective(
             glm::radians(60.0f),
