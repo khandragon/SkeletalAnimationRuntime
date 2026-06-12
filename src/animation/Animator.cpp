@@ -7,9 +7,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "core/Timer.h"
-#include "math/SimdTransform.h"
-
-#define USE_SIMD_TRANSFORM_BLEND 1
+#include "math/TransformBlend.h"
 
 void Animator::Initialize(
     const Skeleton *skeleton,
@@ -671,44 +669,23 @@ void Animator::BlendLocalPoses(
 
     for (std::size_t jointIndex = 0; jointIndex < jointCount; ++jointIndex)
     {
-#if USE_SIMD_TRANSFORM_BLEND
         outPose.translations[jointIndex] =
-            LerpVec3Simd(
+            Engine::Math::LerpVec3(
                 fromPose.translations[jointIndex],
                 toPose.translations[jointIndex],
                 weight);
 
         outPose.rotations[jointIndex] =
-            NlerpQuatSimd(
+            Engine::Math::NlerpQuat(
                 fromPose.rotations[jointIndex],
                 toPose.rotations[jointIndex],
                 weight);
 
         outPose.scales[jointIndex] =
-            LerpVec3Simd(
+            Engine::Math::LerpVec3(
                 fromPose.scales[jointIndex],
                 toPose.scales[jointIndex],
                 weight);
-#else
-        outPose.translations[jointIndex] =
-            glm::mix(
-                fromPose.translations[jointIndex],
-                toPose.translations[jointIndex],
-                weight);
-
-        outPose.rotations[jointIndex] =
-            glm::normalize(
-                glm::slerp(
-                    fromPose.rotations[jointIndex],
-                    toPose.rotations[jointIndex],
-                    weight));
-
-        outPose.scales[jointIndex] =
-            glm::mix(
-                fromPose.scales[jointIndex],
-                toPose.scales[jointIndex],
-                weight);
-#endif
     }
 }
 

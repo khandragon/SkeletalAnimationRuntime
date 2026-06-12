@@ -2,35 +2,35 @@
   "version": 6,
   "configurePresets": [
     {
-      "name": "windows-debug",
-      "displayName": "Windows Debug",
-      "generator": "Visual Studio 17 2022",
-      "binaryDir": "${sourceDir}/build/windows-debug",
+      "name": "laptop-debug",
+      "displayName": "Laptop Debug",
+      "generator": "Visual Studio 18 2026",
+      "binaryDir": "${sourceDir}/build/laptop-debug",
       "architecture": "x64",
       "cacheVariables": {
-        "CMAKE_TOOLCHAIN_FILE": "C:/Users/Saad/Documents/code/vcpkg/scripts/buildsystems/vcpkg.cmake"
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
       }
     },
     {
-      "name": "windows-release",
-      "displayName": "Windows Release",
-      "generator": "Visual Studio 17 2022",
-      "binaryDir": "${sourceDir}/build/windows-release",
+      "name": "laptop-release",
+      "displayName": "Laptop Release",
+      "generator": "Visual Studio 18 2026",
+      "binaryDir": "${sourceDir}/build/laptop-release",
       "architecture": "x64",
       "cacheVariables": {
-        "CMAKE_TOOLCHAIN_FILE": "C:/Users/Saad/Documents/code/vcpkg/scripts/buildsystems/vcpkg.cmake"
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
       }
     }
   ],
   "buildPresets": [
     {
-      "name": "build-debug",
-      "configurePreset": "windows-debug",
+      "name": "laptop-debug",
+      "configurePreset": "laptop-debug",
       "configuration": "Debug"
     },
     {
-      "name": "build-release",
-      "configurePreset": "windows-release",
+      "name": "laptop-release",
+      "configurePreset": "laptop-release",
       "configuration": "Release"
     }
   ]

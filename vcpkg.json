@@ -15,5 +15,5 @@
     "nlohmann-json",
     "tinygltf"
   ],
-  "builtin-baseline": "f3e10653cc27d62a37a3763cd84b38bca07c6075"
+  "builtin-baseline": "6fad4fa784ab2506e35144a7c3d64738976445ea"
 }
