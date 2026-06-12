@@ -5,14 +5,19 @@
 
 #include "math/Transform.h"
 
+// Check if SSE is available and enabled
 #if defined(ENGINE_ENABLE_SSE)
+// Check for SSE support on x86/x64 platforms
 #if defined(__SSE__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 1)
+// True, then include SSE intrinsics and enable SSE math
 #include <immintrin.h>
 #define ENGINE_MATH_HAS_SSE 1
+// False, SSE not supported or enabled, fall back to scalar math
 #else
 #define ENGINE_MATH_HAS_SSE 0
 #endif
 #else
+// SSE not enabled, fall back to scalar math
 #define ENGINE_MATH_HAS_SSE 0
 #endif
 
@@ -20,6 +25,8 @@ namespace Engine::Math
 {
     namespace Detail
     {
+        // Blends two vec3s using linear interpolation.
+        // how much of b to blend into a based on weight.
         [[nodiscard]] inline glm::vec3 LerpVec3Scalar(
             const glm::vec3 &a,
             const glm::vec3 &b,
@@ -28,14 +35,17 @@ namespace Engine::Math
             return a + (b - a) * weight;
         }
 
+        // Blends two quaternions using normalized linear interpolation (Nlerp).
         [[nodiscard]] inline glm::quat NlerpQuatScalar(
             const glm::quat &a,
             const glm::quat &b,
             float weight)
         {
+            // Double cover the long way to ensure we get the correct sign for the quaternion.
             const glm::quat correctedB =
                 (glm::dot(a, b) < 0.0f) ? -b : b;
 
+            // blended = a + (b - a) * weight then normalize the result so we get valid rotation.
             return glm::normalize(a + (correctedB - a) * weight);
         }
 
@@ -155,6 +165,7 @@ namespace Engine::Math
 #endif
     }
 
+    // Blends two transforms using linear interpolation for translation and scale, and normalized linear interpolation for rotation.
     [[nodiscard]] inline Transform BlendTransform(
         const Transform &a,
         const Transform &b,

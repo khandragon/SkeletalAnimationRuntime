@@ -4,6 +4,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+// A simple struct representing a 3D transform with translation, rotation, and scale.
 struct Transform
 {
     glm::vec3 translation{0.0f};
@@ -11,6 +12,7 @@ struct Transform
     glm::vec3 scale{1.0f};
 };
 
+// Converts a Transform to a 4x4 transformation matrix.
 inline glm::mat4 TransformToMat4(const Transform &transform)
 {
     glm::mat4 translationMatrix =
