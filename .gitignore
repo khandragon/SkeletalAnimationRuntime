@@ -13,7 +13,7 @@ install_manifest.txt
 compile_commands.json
 
 # CMake files
-CMakePresets.json
+/CMakePresets.json
 
 # Visual Studio generated files
 .vs/
