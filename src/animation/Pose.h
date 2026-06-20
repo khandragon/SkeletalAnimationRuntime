@@ -8,14 +8,18 @@
 
 #include "math/Transform.h"
 
+// Pose stores the local translation, rotation and scale for each joint, as well as the global transform for each joint.
 struct Pose
 {
+    // Local transforms
     std::vector<glm::vec3> translations;
     std::vector<glm::quat> rotations;
     std::vector<glm::vec3> scales;
 
+    // Global transforms
     std::vector<glm::mat4> global;
 
+    // Making sure this pose has space for exactly jointCount joints.
     void Resize(std::size_t jointCount)
     {
         if (translations.size() != jointCount)
@@ -39,6 +43,7 @@ struct Pose
         }
     }
 
+    // Checks if this pose has space for exactly jointCount joints.
     bool HasSize(std::size_t jointCount) const
     {
         return translations.size() == jointCount &&
@@ -47,11 +52,13 @@ struct Pose
                global.size() == jointCount;
     }
 
+    // Returns the number of joints in this pose, we use translations.size() but we assume all vectors have the same size.
     std::size_t GetJointCount() const
     {
         return translations.size();
     }
 
+    // Gets the local transform for the joint at the given index.
     Transform GetLocal(std::size_t jointIndex) const
     {
         Transform transform{};
@@ -63,6 +70,7 @@ struct Pose
         return transform;
     }
 
+    // Sets the local transform for the joint at the given index.
     void SetLocal(
         std::size_t jointIndex,
         const Transform &transform)

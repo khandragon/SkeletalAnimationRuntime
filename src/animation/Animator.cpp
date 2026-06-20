@@ -9,6 +9,7 @@
 #include "core/Timer.h"
 #include "math/TransformBlend.h"
 
+// Receive already loaded skeleton and AnimationClips
 void Animator::Initialize(
     const Skeleton *skeleton,
     const std::vector<AnimationClip> *clips)
@@ -33,13 +34,16 @@ void Animator::Initialize(
         m_fromPose.Resize(jointCount);
         m_toPose.Resize(jointCount);
 
+        // Start with the bind pose.
         ResetPoseToBindPose(m_pose);
+        // Compute global transforms for the bind pose.
         ComputeGlobalPose(m_pose);
     }
 }
 
 void Animator::Play(std::size_t clipIndex, bool resetTime)
 {
+    // Validate clips pointer and clip index before changing state
     if (m_clips == nullptr)
     {
         return;
@@ -50,23 +54,28 @@ void Animator::Play(std::size_t clipIndex, bool resetTime)
         return;
     }
 
+    // Set current and previous clip indices to the requested clip for an instant switch.
     m_currentClipIndex = clipIndex;
     m_previousClipIndex = clipIndex;
     m_isBlending = false;
     m_blendElapsed = 0.0f;
     m_blendDuration = 0.0f;
 
+    // Optionally reset time to the start of the clip.
     if (resetTime)
     {
         m_time = 0.0f;
         m_previousTime = 0.0f;
     }
 
+    // Prepare keyframe caches for the new clip.
     const AnimationClip &clip = (*m_clips)[m_currentClipIndex];
 
+    // For an instant switch, prepare both caches for the new clip.
     PrepareKeyframeCache(m_currentKeyframeCache, clip);
     PrepareKeyframeCache(m_previousKeyframeCache, clip);
 
+    // Reset caches to start from the beginning of the clip.
     if (resetTime)
     {
         ResetKeyframeCache(m_currentKeyframeCache);
@@ -76,6 +85,7 @@ void Animator::Play(std::size_t clipIndex, bool resetTime)
 
 void Animator::CrossFadeTo(std::size_t clipIndex, float blendDuration)
 {
+    // Validate clips pointer and clip index before changing state
     if (m_clips == nullptr)
     {
         return;
@@ -91,6 +101,7 @@ void Animator::CrossFadeTo(std::size_t clipIndex, float blendDuration)
         return;
     }
 
+    // If blend duration is zero or negative, perform an instant switch.
     if (blendDuration <= 0.0f)
     {
         Play(clipIndex, true);
@@ -106,11 +117,14 @@ void Animator::CrossFadeTo(std::size_t clipIndex, float blendDuration)
     m_currentClipIndex = clipIndex;
     m_time = 0.0f;
 
+    // Prepare keyframe cache for the new clip.
     const AnimationClip &currentClip = (*m_clips)[m_currentClipIndex];
 
+    // Prepare the current cache for the new clip, but keep the previous cache as is for blending.
     PrepareKeyframeCache(m_currentKeyframeCache, currentClip);
     ResetKeyframeCache(m_currentKeyframeCache);
 
+    // Start blending.
     m_isBlending = true;
     m_blendElapsed = 0.0f;
     m_blendDuration = blendDuration;
@@ -118,6 +132,7 @@ void Animator::CrossFadeTo(std::size_t clipIndex, float blendDuration)
 
 void Animator::SetCurrentTime(float time)
 {
+    // Validate clips pointer and current clip index
     const AnimationClip *clip = GetCurrentClip();
 
     if (clip == nullptr || clip->duration <= 0.0f)
@@ -127,6 +142,7 @@ void Animator::SetCurrentTime(float time)
         return;
     }
 
+    // Normalize time to be within the clip duration, handling looping if enabled.
     m_time = NormalizeClipTime(time, clip->duration);
     ResetKeyframeCache(m_currentKeyframeCache);
 }
@@ -140,16 +156,19 @@ void Animator::SetNormalizedTime(float normalizedTime)
         return;
     }
 
+    // Set current time based on normalized time and clip duration.
     SetCurrentTime(normalizedTime * clip->duration);
 }
 
 float Animator::NormalizeClipTime(float time, float duration) const
 {
+    // Handle edge case of zero or negative duration to avoid division by zero.
     if (duration <= 0.0f)
     {
         return 0.0f;
     }
 
+    // If looping is enabled, wrap time around the duration. Otherwise, clamp it to the valid range.
     if (m_loop)
     {
         float wrappedTime = std::fmod(time, duration);
@@ -162,6 +181,7 @@ float Animator::NormalizeClipTime(float time, float duration) const
         return wrappedTime;
     }
 
+    // clamp time to the range [0, duration] if not looping
     return std::clamp(time, 0.0f, duration);
 }
 
@@ -172,12 +192,13 @@ float Animator::AdvanceClipTime(
     std::vector<std::size_t> &keyframeCache)
 {
     const float previousTime = time;
-
+    // Advance time based on playback speed and delta time, then normalize it.
     const float newTime =
         NormalizeClipTime(
             time + deltaTime * m_playbackSpeed,
             duration);
 
+    // If looping is enabled and the time wrapped around, reset the keyframe cache to avoid incorrect keyframe indices.
     if (m_loop)
     {
         const bool wrappedForward =
@@ -197,16 +218,19 @@ float Animator::AdvanceClipTime(
     return newTime;
 }
 
+// InverseLerp calculates the blend weight for a value between two positions, returning a normalized value between 0 and 1.
 float Animator::InverseLerp(
     float a,
     float b,
     float value)
 {
+    // Handle edge case where a and b are very close to avoid division by zero.
     if (std::abs(b - a) <= 0.00001f)
     {
         return 0.0f;
     }
 
+    // Calculate the normalized position of value between a and b, and clamp it to the range [0, 1].
     return std::clamp(
         (value - a) / (b - a),
         0.0f,
@@ -215,6 +239,7 @@ float Animator::InverseLerp(
 
 void Animator::Update(float deltaTime)
 {
+    // Validate skeleton and clips before updating animation state
     if (m_skeleton == nullptr || m_clips == nullptr || m_clips->empty())
     {
         return;
@@ -239,8 +264,10 @@ void Animator::Update(float deltaTime)
         currentClip.duration,
         m_currentKeyframeCache);
 
+    // If not blending, sample the current clip directly into the output pose for better performance.
     if (!m_isBlending)
     {
+        // Performance Profiling how many milliseconds are spent on sampling.
         {
             ScopedTimer timer(
                 "Animation sampling",
@@ -254,6 +281,7 @@ void Animator::Update(float deltaTime)
                 m_currentKeyframeCache);
         }
 
+        // Performance Profiling how many milliseconds are spent on local-to-global pose computation.
         {
             ScopedTimer timer(
                 "Local-to-global pose",
@@ -286,6 +314,7 @@ void Animator::Update(float deltaTime)
         previousClip.duration,
         m_previousKeyframeCache);
 
+    // Update blend timer and calculate blend weight.
     m_blendElapsed += deltaTime;
 
     const float weight = GetBlendWeight();
@@ -321,6 +350,7 @@ void Animator::Update(float deltaTime)
         ComputeGlobalPose(m_pose);
     }
 
+    // If the blend has completed, finalize the transition to the new clip.
     if (m_blendElapsed >= m_blendDuration)
     {
         m_isBlending = false;
@@ -479,6 +509,7 @@ void Animator::EvaluateBlendTree1D(
 
 const AnimationClip *Animator::GetCurrentClip() const
 {
+    // Validate clips pointer and current clip index before returning clip
     if (m_clips == nullptr || m_clips->empty())
     {
         return nullptr;
