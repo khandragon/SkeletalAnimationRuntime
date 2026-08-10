@@ -56,37 +56,6 @@ The final result supports data-driven 1D locomotion blend trees, allowing a sing
 - Supports multithreaded animation update using a CPU job system.
 - Includes optimization work such as persistent pose storage, keyframe index caching, SIMD pose blending, and avoiding repeated allocations.
 
-
-## Demo Video
-
-
-## Screenshots
-
-### Animated character
-
-![Animated character](media/screenshots/animated_character.png)
-
-### Debug skeleton overlay
-
-![Debug skeleton overlay](media/screenshots/skeleton_overlay.png)
-
-### Animation graph JSON
-
-![Animation graph JSON](media/screenshots/animation_graph_json.png)
-
-### Performance panel
-
-![Performance panel](media/screenshots/performance_panel.png)
-
-### 100-character test
-
-![100-character test](media/screenshots/100_character_test.png)
-
-### Profiler capture
-
-![Profiler capture](media/screenshots/profiler_capture.png)
-
-
 ## Architecture
 
 The runtime is split into several small systems:
