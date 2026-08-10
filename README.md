@@ -4,19 +4,140 @@ A C++ / OpenGL skeletal animation runtime focused on engine-level animation syst
 
 The goal of this project was not just to play an animation clip. The goal was to build the core runtime pieces that a small game engine would need in order to load a skinned character, evaluate animation data, blend poses, drive animation from external JSON data, and profile performance across many animated characters.
 
-## Build
+### Prerequisites
 
-Example Windows build commands:
+Install the following before configuring the project:
+
+- **Git**
+- **CMake 3.28 or newer**
+- **Visual Studio** with the **Desktop development with C++** workload
+- A Windows SDK installed through Visual Studio
+- **vcpkg**
+- A GPU and graphics driver with **OpenGL 4.5** support
+
+You can verify CMake with:
 
 ```powershell
-cmake --build --preset build-debug
+cmake --version
+```
+
+### Clone the Repository
+
+```powershell
+git clone <repository-url>
+cd SkeletalAnimationRuntime
+```
+
+Replace `<repository-url>` with the URL of this repository.
+
+### Set Up vcpkg
+
+If vcpkg is not already installed:
+
+```powershell
+git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
+C:\vcpkg\bootstrap-vcpkg.bat
+```
+
+For the current PowerShell session:
+
+```powershell
+$env:VCPKG_ROOT = "C:\vcpkg"
+```
+
+If vcpkg is installed somewhere else, set `VCPKG_ROOT` to that location instead.
+
+### Install Dependencies
+
+If the repository contains a `vcpkg.json` manifest, install the manifest dependencies with:
+
+```powershell
+& "$env:VCPKG_ROOT\vcpkg.exe" install --triplet x64-windows
+```
+
+If the repository does **not** contain a `vcpkg.json` manifest, install the dependencies directly:
+
+```powershell
+& "$env:VCPKG_ROOT\vcpkg.exe" install `
+    glfw3 `
+    glad `
+    glm `
+    "imgui[glfw-binding,opengl3-binding]" `
+    nlohmann-json `
+    tinygltf `
+    --triplet x64-windows
+```
+
+### Configure
+
+Run the configure step from the repository root:
+
+```powershell
+cmake -S . -B build/windows-debug `
+    -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+    -DVCPKG_TARGET_TRIPLET=x64-windows
+```
+
+This generates the native build files and allows the `find_package(...)` calls in `CMakeLists.txt` to resolve the vcpkg dependencies.
+
+> If `cmake --build` reports that `ALL_BUILD.vcxproj` or another generated project file is missing, run the configure command above first.
+
+### Build
+
+Build the Debug configuration:
+
+```powershell
+cmake --build build/windows-debug --config Debug
+```
+
+The executable will be generated at:
+
+```text
+build/windows-debug/Debug/SkeletalAnimationRuntime.exe
+```
+
+For a Release build:
+
+```powershell
+cmake --build build/windows-debug --config Release
+```
+
+The Release executable will be generated at:
+
+```text
+build/windows-debug/Release/SkeletalAnimationRuntime.exe
+```
+
+### Run
+
+From the repository root, run the Debug build with:
+
+```powershell
 .\build\windows-debug\Debug\SkeletalAnimationRuntime.exe
 ```
+
+Or run the Release build with:
+
+```powershell
+.\build\windows-debug\Release\SkeletalAnimationRuntime.exe
+```
+
+The CMake post-build step automatically copies the repository's `assets` directory beside the executable, so the animation graph and glTF assets are available to the runtime without a separate copy step.
+
+### Rebuild After Source Changes
+
+For normal C++ source changes, you usually only need to rebuild:
+
+```powershell
+cmake --build build/windows-debug --config Debug
+```
+
+Re-run the configure step when you change dependency configuration, CMake settings, source-file lists in `CMakeLists.txt`, the generator/toolchain, or the build directory.
 
 ## Controls
 
 | Input       | Action                 |
-| -- | - |
+| ----------- | ---------------------- |
 | `1`         | Set speed to 0.0       |
 | `2`         | Set speed to 1.5       |
 | `3`         | Set speed to 4.0       |
@@ -26,13 +147,11 @@ cmake --build --preset build-debug
 | Shift       | Faster camera movement |
 | Escape      | Close application      |
 
-
 ## Summary
 
 This project implements a data-driven skeletal animation runtime rather than a one-off animation demo. It covers the full path from glTF mesh and skeleton loading, to animation sampling, pose blending, GPU skinning, graph-driven playback, root motion, blend trees, debug visualization, profiling, multithreaded crowd updates, and performance scaling.
 
 The final result supports data-driven 1D locomotion blend trees, allowing a single `speed` parameter to smoothly blend between survey/idle, walk, and run animations.
-
 
 ## Features
 
@@ -100,8 +219,6 @@ Debug UI
 
 The animation update is designed so that each `AnimatedCharacter` owns its own `Animator`, pose data, joint matrices, root motion state, and world transform. This makes characters independent and safe to update in parallel.
 
-
-
 ## glTF Loading
 
 The runtime loads skinned glTF/glb assets and extracts the minimum data needed for skeletal animation:
@@ -152,8 +269,6 @@ else
     global[joint] = global[parent] * localMatrix;
 ```
 
-
-
 ## Animation Sampling
 
 Animation clips are represented as channels:
@@ -188,8 +303,6 @@ Sampling behavior:
 
 The keyframe cache is stored per `Animator`, not inside the shared `AnimationClip`, so multiple characters can safely evaluate the same clip on different threads.
 
-
-
 ## Pose Blending
 
 The runtime supports clip-to-clip cross-fading and blend-tree pose blending.
@@ -218,8 +331,6 @@ scale       = lerp(a.scale, b.scale, weight);
 
 After local pose blending, the runtime recomputes the global pose so skinning receives the final blended joint transforms.
 
-
-
 ## Skinning
 
 The runtime uses GPU skinning. Each frame, the CPU computes one skinning matrix per joint:
@@ -241,8 +352,6 @@ vec4 skinnedPosition = skin * vec4(inPosition, 1.0);
 ```
 
 This moves vertex deformation to the GPU while keeping animation evaluation and pose generation on the CPU.
-
-
 
 ## Data-Driven Animation Graph
 
@@ -316,8 +425,6 @@ pose = blend(lowerPose, upperPose, weight);
 
 This allows the graph to smoothly blend between idle/survey, walk, and run using a single `speed` parameter.
 
-
-
 ## Root Motion
 
 Root motion is extracted after animation sampling and before joint matrix generation.
@@ -351,8 +458,6 @@ The debug UI displays:
 - Accumulated root motion.
 - Root path point count.
 - Root path rendering in world space.
-
-
 
 ## Multithreading
 
@@ -403,8 +508,6 @@ render on main thread
 ```
 
 This makes it possible to test performance scaling across many animated characters.
-
-
 
 ## Debug Views
 
@@ -474,8 +577,6 @@ The runtime includes an ImGui debug interface with panels for:
 - Render time.
 - Full frame time.
 
-
-
 ## Profiling Results
 
 The runtime includes CPU timing through scoped timers. Timed regions include:
@@ -496,14 +597,11 @@ Full frame
 
 Example profiling panel:
 
-
-
-
 ## Performance Scaling
 
 The runtime includes a crowd test to compare 1, 10, 100, and 500 animated characters. Each character owns its own animator, pose data, joint matrices, root motion state, and world transform.
 
-| Characters | Animation Update |  Render | Total Frame |
+| Characters | Animation Update | Render | Total Frame |
 
 Testing notes:
 
@@ -511,8 +609,6 @@ Testing notes:
 - VSync can cap the reported frame time, so profiling with VSync disabled may give clearer CPU timing.
 - Uniform joint matrix uploads are simple but not ideal for large crowds.
 - A future SSBO/UBO path would reduce per-character uniform upload overhead.
-
-
 
 ## Important Implementation Details
 
